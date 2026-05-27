@@ -4,6 +4,92 @@ Comprehensive procedures for recovering from failures across all CRAFT system co
 
 ---
 
+## GitHub-to-Vercel Deployment Error Propagation Flow
+
+The deployment chain consists of 6 failure points. Errors must propagate with typed responses at each layer:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ GitHub Push Event                                                           │
+└────────────────────────────────┬────────────────────────────────────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │ Failure Point 1:        │
+                    │ GitHub API Validation   │
+                    │ (auth, rate limit, 404) │
+                    └────────────┬────────────┘
+                                 │ ✓ Valid
+                    ┌────────────▼────────────┐
+                    │ Failure Point 2:        │
+                    │ Vercel API Trigger      │
+                    │ (auth, quota, 500)      │
+                    └────────────┬────────────┘
+                                 │ ✓ Deployment created
+                    ┌────────────▼────────────┐
+                    │ Failure Point 3:        │
+                    │ Database Insert         │
+                    │ (timeout, constraint)   │
+                    └────────────┬────────────┘
+                                 │ ✓ Metadata stored
+                    ┌────────────▼────────────┐
+                    │ Failure Point 4:        │
+                    │ Partial Failures        │
+                    │ (Vercel OK, DB fails)   │
+                    └────────────┬────────────┘
+                                 │ ✓ Deployment URL returned
+                    ┌────────────▼────────────┐
+                    │ Failure Point 5:        │
+                    │ Network Timeouts        │
+                    │ (connection, DNS)       │
+                    └────────────┬────────────┘
+                                 │ ✓ Timeout handled
+                    ┌────────────▼────────────┐
+                    │ Failure Point 6:        │
+                    │ Invalid Configuration   │
+                    │ (missing env vars)      │
+                    └────────────┬────────────┘
+                                 │ ✓ Config validated
+                    ┌────────────▼────────────┐
+                    │ Deployment Complete     │
+                    │ Return typed response   │
+                    └────────────────────────┘
+```
+
+### Error Response Structure
+
+All errors must return a consistent typed response:
+
+```typescript
+interface TriggerDeploymentResult {
+    success: boolean;
+    deploymentId: string;
+    deploymentUrl?: string;
+    status?: string;
+    errorMessage?: string;  // Always defined if success=false
+}
+```
+
+### Error Propagation Rules
+
+1. **No silent failures**: Every error must be logged and returned
+2. **Typed errors only**: All errors must be instances of typed error classes
+3. **Partial success**: If Vercel succeeds but DB fails, return success with deployment URL
+4. **Rollback on failure**: Do not create DB record if Vercel deployment fails
+5. **Consistent messages**: Error messages must contain actionable information
+
+### Failure Point Details
+
+| Point | Layer | Errors | Propagation | Rollback |
+|-------|-------|--------|-------------|----------|
+| 1 | GitHub | 401, 403, 404, 429 | Typed error response | N/A |
+| 2 | Vercel | 401, 404, 429, 500 | Typed error response | No DB insert |
+| 3 | Database | Timeout, constraint, permission | Logged, non-fatal | N/A |
+| 4 | Partial | Vercel OK, DB fails | Return success | N/A |
+| 5 | Network | Timeout, ECONNREFUSED | Typed error response | No DB insert |
+| 6 | Config | Missing env vars | Typed error response | N/A |
+
+---
+
 ## Table of Contents
 
 1. [Database Failures](#1-database-failures)
