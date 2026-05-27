@@ -142,6 +142,78 @@ describe('POST /api/deployments/[id]/https', () => {
         expect(body.state).toBe('pending');
         expect(body.domain).toBe('example.com');
     });
+
+    // Certificate provisioning begins in 'pending' state immediately after domain is added
+    it('returns pending cert state immediately after domain add', async () => {
+        mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
+        mockAddDomain.mockResolvedValue(undefined);
+        mockGetCertificate.mockResolvedValue({ domain: 'example.com', state: 'pending', expiresAt: null });
+
+        const { POST } = await import('./route');
+        const res = await POST(makeRequest('POST'), { params });
+        const body = await res.json();
+
+        expect(res.status).toBe(200);
+        expect(body.state).toBe('pending');
+        expect(body.expiresAt).toBeNull();
+    });
+
+    // AUTH_FAILED from Vercel API maps to 500
+    it('returns 500 when Vercel authentication fails (AUTH_FAILED)', async () => {
+        mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
+        const { VercelApiError } = await import('@/services/vercel.service');
+        mockAddDomain.mockRejectedValue(new VercelApiError('Invalid Vercel token', 'AUTH_FAILED'));
+
+        const { POST } = await import('./route');
+        expect((await POST(makeRequest('POST'), { params })).status).toBe(500);
+    });
+
+    // Generic unexpected error from addDomain
+    it('returns 500 on unexpected addDomain error', async () => {
+        mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
+        mockAddDomain.mockRejectedValue(new Error('Unexpected Vercel error'));
+
+        const { POST } = await import('./route');
+        const res = await POST(makeRequest('POST'), { params });
+        expect(res.status).toBe(500);
+        const body = await res.json();
+        expect(body.error).toMatch(/Unexpected Vercel error/);
+    });
+
+    // getCertificate fails after domain successfully added
+    it('propagates error when getCertificate throws after successful domain add', async () => {
+        mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
+        mockAddDomain.mockResolvedValue(undefined);
+        mockGetCertificate.mockRejectedValue(new Error('Certificate fetch failed'));
+
+        const { POST } = await import('./route');
+        // The route has no try/catch around getCertificate after addDomain — unhandled throw
+        await expect(POST(makeRequest('POST'), { params })).rejects.toThrow('Certificate fetch failed');
+    });
+
+    // Retry-After header is rounded up to nearest second
+    it('rounds Retry-After up to nearest second for fractional retryAfterMs', async () => {
+        mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
+        const { VercelApiError } = await import('@/services/vercel.service');
+        mockAddDomain.mockRejectedValue(new VercelApiError('rate limited', 'RATE_LIMITED', 1500));
+
+        const { POST } = await import('./route');
+        const res = await POST(makeRequest('POST'), { params });
+        expect(res.status).toBe(429);
+        expect(res.headers.get('Retry-After')).toBe('2');
+    });
+
+    // Rate limit with no retryAfterMs — header should not be set
+    it('omits Retry-After header when retryAfterMs is undefined', async () => {
+        mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
+        const { VercelApiError } = await import('@/services/vercel.service');
+        mockAddDomain.mockRejectedValue(new VercelApiError('rate limited', 'RATE_LIMITED'));
+
+        const { POST } = await import('./route');
+        const res = await POST(makeRequest('POST'), { params });
+        expect(res.status).toBe(429);
+        expect(res.headers.get('Retry-After')).toBeNull();
+    });
 });
 
 describe('GET /api/deployments/[id]/https', () => {
@@ -191,5 +263,76 @@ describe('GET /api/deployments/[id]/https', () => {
         const body = await res.json();
         expect(body.requiredTier).toBe('pro');
         expect(body.upgradeUrl).toBe('/pricing');
+    });
+
+    // Certificate provisioning state polling — pending → issued → active
+    // Callers poll GET to track provisioning progress after the initial POST
+    it('returns issued cert state during provisioning (polling cycle 1)', async () => {
+        mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
+        mockGetCertificate.mockResolvedValue({ domain: 'example.com', state: 'issued' });
+
+        const { GET } = await import('./route');
+        const res = await GET(makeRequest('GET'), { params });
+        const body = await res.json();
+
+        expect(res.status).toBe(200);
+        expect(body.state).toBe('issued');
+    });
+
+    it('returns active cert state with expiresAt once provisioning completes', async () => {
+        mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
+        mockGetCertificate.mockResolvedValue({
+            domain: 'example.com',
+            state: 'active',
+            expiresAt: '2027-06-01T00:00:00Z',
+        });
+
+        const { GET } = await import('./route');
+        const res = await GET(makeRequest('GET'), { params });
+        const body = await res.json();
+
+        expect(res.status).toBe(200);
+        expect(body.state).toBe('active');
+        expect(body.expiresAt).toBe('2027-06-01T00:00:00Z');
+    });
+
+    // Provisioning stalled — Vercel returns an error state
+    it('returns error state when certificate provisioning fails on Vercel side', async () => {
+        mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
+        mockGetCertificate.mockResolvedValue({
+            domain: 'example.com',
+            state: 'error',
+            error: 'CAA record mismatch',
+        });
+
+        const { GET } = await import('./route');
+        const res = await GET(makeRequest('GET'), { params });
+        const body = await res.json();
+
+        expect(res.status).toBe(200);
+        expect(body.state).toBe('error');
+        expect(body.error).toMatch(/CAA record mismatch/);
+    });
+
+    // getCertificate throws — Vercel API unavailable during polling
+    it('returns 500 when getCertificate throws during polling', async () => {
+        mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
+        mockGetCertificate.mockRejectedValue(new Error('Vercel API unreachable'));
+
+        const { GET } = await import('./route');
+        const res = await GET(makeRequest('GET'), { params });
+
+        expect(res.status).toBe(500);
+        const body = await res.json();
+        expect(body.error).toMatch(/Vercel API unreachable/);
+    });
+
+    // GET 404 when vercel_project_id is missing
+    it('returns 404 when vercel_project_id is missing on GET', async () => {
+        mockFrom.mockReturnValue(
+            withProTier([{ data: { custom_domain: 'example.com', vercel_project_id: null }, error: null }]),
+        );
+        const { GET } = await import('./route');
+        expect((await GET(makeRequest('GET'), { params })).status).toBe(404);
     });
 });
