@@ -82,4 +82,104 @@ describe('POST /api/branding/upload', () => {
         expect(res.status).toBe(422);
         expect((await res.json()).code).toBe('UNSAFE_SVG');
     });
+
+    it('returns 413 when content-length exceeds size limit', async () => {
+        const { POST } = await import('./route');
+        const req = new NextRequest('http://localhost/api/branding/upload', {
+            method: 'POST',
+            headers: {
+                'content-length': String(6 * 1024 * 1024), // 6MB, exceeds 5MB limit
+            },
+        });
+        const res = await POST(req, { params: {} });
+        expect(res.status).toBe(413);
+        expect((await res.json()).error).toContain('exceeds maximum');
+    });
+
+    it('returns 413 when content-length is missing', async () => {
+        const { POST } = await import('./route');
+        const req = new NextRequest('http://localhost/api/branding/upload', {
+            method: 'POST',
+            headers: {},
+        });
+        const res = await POST(req, { params: {} });
+        expect(res.status).toBe(413);
+    });
+
+    it('accepts valid metadata in JSON format', async () => {
+        const { POST } = await import('./route');
+        const form = new FormData();
+        const file = new File([PNG_MAGIC], 'logo.png', { type: 'image/png' });
+        form.append('file', file);
+        form.append('metadata', JSON.stringify({
+            filename: 'logo.png',
+            description: 'Main logo',
+            tags: ['logo', 'brand'],
+            category: 'branding',
+        }));
+
+        const req = new NextRequest('http://localhost/api/branding/upload', { method: 'POST' });
+        (req as any).formData = async () => form;
+
+        const res = await POST(req, { params: {} });
+        expect(res.status).toBe(200);
+    });
+
+    it('returns 400 for invalid metadata JSON', async () => {
+        const { POST } = await import('./route');
+        const form = new FormData();
+        const file = new File([PNG_MAGIC], 'logo.png', { type: 'image/png' });
+        form.append('file', file);
+        form.append('metadata', '{invalid json}');
+
+        const req = new NextRequest('http://localhost/api/branding/upload', { method: 'POST' });
+        (req as any).formData = async () => form;
+
+        const res = await POST(req, { params: {} });
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toContain('JSON');
+    });
+
+    it('returns 400 for invalid metadata schema', async () => {
+        const { POST } = await import('./route');
+        const form = new FormData();
+        const file = new File([PNG_MAGIC], 'logo.png', { type: 'image/png' });
+        form.append('file', file);
+        form.append('metadata', JSON.stringify({
+            filename: 123, // Invalid: should be string
+            tags: 'not-array', // Invalid: should be array
+        }));
+
+        const req = new NextRequest('http://localhost/api/branding/upload', { method: 'POST' });
+        (req as any).formData = async () => form;
+
+        const res = await POST(req, { params: {} });
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toContain('Validation');
+    });
+
+    it('returns 400 when metadata is not a JSON string', async () => {
+        const { POST } = await import('./route');
+        const form = new FormData();
+        const file = new File([PNG_MAGIC], 'logo.png', { type: 'image/png' });
+        form.append('file', file);
+        form.append('metadata', 123); // Not a string
+
+        const req = new NextRequest('http://localhost/api/branding/upload', { method: 'POST' });
+        (req as any).formData = async () => form;
+
+        const res = await POST(req, { params: {} });
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toContain('JSON string');
+    });
+
+    it('returns 413 when file size exceeds limit in body validation', async () => {
+        const { POST } = await import('./route');
+        const big = new Uint8Array(6 * 1024 * 1024); // 6MB
+        big.set(PNG_MAGIC);
+        const file = new File([big], 'logo.png', { type: 'image/png' });
+        const res = await POST(makeMultipartRequest(file), { params: {} });
+        expect(res.status).toBe(413);
+        expect((await res.json()).error).toContain('exceeds maximum');
+    });
 });
