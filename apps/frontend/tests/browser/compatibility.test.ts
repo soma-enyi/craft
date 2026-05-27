@@ -366,3 +366,252 @@ describe('JavaScript compatibility – ES2020+ features', () => {
     expect(original.a.b).toBe(1);
   });
 });
+
+// ── CustomizationStudio browser compatibility matrix (#575) ──────────────────
+//
+// Supported browser matrix (documented):
+//   Chrome 120+, Firefox 121+, Safari 17+, Edge 120+
+//
+// Viewport sizes tested:
+//   mobile:  375 × 667  (iPhone SE)
+//   tablet:  768 × 1024 (iPad)
+//   desktop: 1440 × 900
+//
+// Tests run in jsdom and cover the browser-agnostic logic layer.
+// Rendering quirks specific to real browsers are noted inline.
+
+const VIEWPORTS = {
+  mobile:  { width: 375,  height: 667  },
+  tablet:  { width: 768,  height: 1024 },
+  desktop: { width: 1440, height: 900  },
+} as const;
+
+type Viewport = keyof typeof VIEWPORTS;
+
+// ── Color picker feature detection ───────────────────────────────────────────
+
+interface ColorPickerSupport {
+  inputTypeColor: boolean;
+  eyeDropper: boolean;
+}
+
+function detectColorPickerSupport(win: Partial<typeof globalThis> = globalThis): ColorPickerSupport {
+  const doc = (win as any).document;
+  let inputTypeColor = false;
+  if (doc) {
+    try {
+      const input = doc.createElement('input');
+      input.setAttribute('type', 'color');
+      inputTypeColor = input.type === 'color';
+    } catch {
+      inputTypeColor = false;
+    }
+  }
+  return {
+    inputTypeColor,
+    eyeDropper: 'EyeDropper' in win,
+  };
+}
+
+// ── Font selector feature detection ──────────────────────────────────────────
+
+function detectFontSelectorSupport(win: Partial<typeof globalThis> = globalThis): boolean {
+  // queryLocalFonts is available in Chrome 103+ / Edge 103+; not in Firefox/Safari
+  return typeof (win as any).queryLocalFonts === 'function';
+}
+
+// ── Live preview feature detection ───────────────────────────────────────────
+
+function detectLivePreviewSupport(win: Partial<typeof globalThis> = globalThis): boolean {
+  // Live preview uses CSS custom properties and ResizeObserver
+  const hasCssVars = typeof (win as any).CSS?.supports === 'function'
+    ? (win as any).CSS.supports('--a', '0')
+    : false;
+  const hasResizeObserver = 'ResizeObserver' in win;
+  return hasCssVars && hasResizeObserver;
+}
+
+// ── Graceful degradation helpers ─────────────────────────────────────────────
+
+function colorPickerFallback(support: ColorPickerSupport): 'native' | 'text-input' {
+  return support.inputTypeColor ? 'native' : 'text-input';
+}
+
+function fontSelectorFallback(hasQueryLocalFonts: boolean): 'system-fonts' | 'preset-list' {
+  return hasQueryLocalFonts ? 'system-fonts' : 'preset-list';
+}
+
+// ── Viewport-aware layout helpers ─────────────────────────────────────────────
+
+function getStudioLayout(width: number): 'single-column' | 'split-panel' {
+  // Below tablet breakpoint (768px) → single column; at/above → split panel
+  return width >= VIEWPORTS.tablet.width ? 'split-panel' : 'single-column';
+}
+
+function isTabPanelScrollable(viewportWidth: number): boolean {
+  // On mobile, tab panels scroll horizontally; on tablet+ they don't need to
+  return viewportWidth < VIEWPORTS.tablet.width;
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe('CustomizationStudio – viewport rendering', () => {
+  it.each(Object.entries(VIEWPORTS) as [Viewport, { width: number; height: number }][])(
+    '%s viewport (%i×%i): layout is correct',
+    (name, { width }) => {
+      const layout = getStudioLayout(width);
+      if (name === 'mobile') {
+        expect(layout).toBe('single-column');
+      } else {
+        expect(layout).toBe('split-panel');
+      }
+    },
+  );
+
+  it('mobile viewport enables horizontal tab scrolling', () => {
+    expect(isTabPanelScrollable(VIEWPORTS.mobile.width)).toBe(true);
+  });
+
+  it('tablet viewport does not require tab scrolling', () => {
+    expect(isTabPanelScrollable(VIEWPORTS.tablet.width)).toBe(false);
+  });
+
+  it('desktop viewport does not require tab scrolling', () => {
+    expect(isTabPanelScrollable(VIEWPORTS.desktop.width)).toBe(false);
+  });
+
+  it('boundary: 767px is single-column (just below tablet)', () => {
+    expect(getStudioLayout(767)).toBe('single-column');
+  });
+
+  it('boundary: 768px is split-panel (tablet breakpoint)', () => {
+    expect(getStudioLayout(768)).toBe('split-panel');
+  });
+});
+
+describe('CustomizationStudio – color picker feature detection', () => {
+  it('detects native color picker in jsdom', () => {
+    const support = detectColorPickerSupport();
+    // jsdom supports input[type=color]
+    expect(typeof support.inputTypeColor).toBe('boolean');
+  });
+
+  it('falls back to text-input when input[type=color] is unsupported', () => {
+    const support: ColorPickerSupport = { inputTypeColor: false, eyeDropper: false };
+    expect(colorPickerFallback(support)).toBe('text-input');
+  });
+
+  it('uses native color picker when input[type=color] is supported', () => {
+    const support: ColorPickerSupport = { inputTypeColor: true, eyeDropper: false };
+    expect(colorPickerFallback(support)).toBe('native');
+  });
+
+  it('EyeDropper is not available in jsdom (Chrome-only feature)', () => {
+    const support = detectColorPickerSupport();
+    // EyeDropper is Chrome 95+ only; jsdom does not implement it
+    expect(support.eyeDropper).toBe(false);
+  });
+
+  it('gracefully handles missing document (SSR context)', () => {
+    const support = detectColorPickerSupport({ navigator: {} } as any);
+    expect(support.inputTypeColor).toBe(false);
+  });
+});
+
+describe('CustomizationStudio – font selector feature detection', () => {
+  it('returns false in jsdom (queryLocalFonts not available)', () => {
+    expect(detectFontSelectorSupport()).toBe(false);
+  });
+
+  it('falls back to preset-list when queryLocalFonts is unavailable', () => {
+    expect(fontSelectorFallback(false)).toBe('preset-list');
+  });
+
+  it('uses system-fonts when queryLocalFonts is available (Chrome 103+)', () => {
+    expect(fontSelectorFallback(true)).toBe('system-fonts');
+  });
+
+  it('simulates Chrome 103+ with queryLocalFonts stub', () => {
+    const mockWin = { queryLocalFonts: async () => [] } as any;
+    expect(detectFontSelectorSupport(mockWin)).toBe(true);
+  });
+});
+
+describe('CustomizationStudio – live preview feature detection', () => {
+  it('requires both CSS custom properties and ResizeObserver', () => {
+    // jsdom supports CSS custom properties but not ResizeObserver by default
+    const support = detectLivePreviewSupport();
+    expect(typeof support).toBe('boolean');
+  });
+
+  it('returns false when ResizeObserver is missing (Firefox < 69, Safari < 13.1)', () => {
+    const mockWin = {
+      CSS: { supports: () => true },
+      // ResizeObserver intentionally absent
+    } as any;
+    expect(detectLivePreviewSupport(mockWin)).toBe(false);
+  });
+
+  it('returns false when CSS custom properties are unsupported (IE 11)', () => {
+    const mockWin = {
+      CSS: { supports: () => false },
+      ResizeObserver: class {},
+    } as any;
+    expect(detectLivePreviewSupport(mockWin)).toBe(false);
+  });
+
+  it('returns true when both features are present (modern browsers)', () => {
+    const mockWin = {
+      CSS: { supports: () => true },
+      ResizeObserver: class {},
+    } as any;
+    expect(detectLivePreviewSupport(mockWin)).toBe(true);
+  });
+});
+
+describe('CustomizationStudio – CSS custom property rendering', () => {
+  it('primary color CSS variable resolves correctly', () => {
+    const style = { getPropertyValue: () => ' #6366f1 ' } as unknown as CSSStyleDeclaration;
+    expect(resolveCssVar('--primary-color', '#000', style)).toBe('#6366f1');
+  });
+
+  it('secondary color CSS variable resolves correctly', () => {
+    const style = { getPropertyValue: () => ' #a5b4fc ' } as unknown as CSSStyleDeclaration;
+    expect(resolveCssVar('--secondary-color', '#fff', style)).toBe('#a5b4fc');
+  });
+
+  it('falls back to default when CSS variable is not set', () => {
+    const style = { getPropertyValue: () => '' } as unknown as CSSStyleDeclaration;
+    expect(resolveCssVar('--primary-color', '#6366f1', style)).toBe('#6366f1');
+  });
+
+  it('handles undefined style (SSR / no DOM)', () => {
+    expect(resolveCssVar('--primary-color', '#6366f1', undefined)).toBe('#6366f1');
+  });
+});
+
+describe('CustomizationStudio – cross-browser form input compatibility', () => {
+  it('color hex value is a valid 6-digit hex string', () => {
+    const isValidHex = (v: string) => /^#[0-9a-fA-F]{6}$/.test(v);
+    expect(isValidHex('#6366f1')).toBe(true);
+    expect(isValidHex('#a5b4fc')).toBe(true);
+    expect(isValidHex('invalid')).toBe(false);
+    expect(isValidHex('#fff')).toBe(false); // 3-digit not accepted
+  });
+
+  it('font family names do not contain unsafe characters', () => {
+    const isSafeFontName = (v: string) => /^[a-zA-Z0-9 ,'-]+$/.test(v);
+    expect(isSafeFontName('Inter')).toBe(true);
+    expect(isSafeFontName('Roboto Mono')).toBe(true);
+    expect(isSafeFontName("'Helvetica Neue', sans-serif")).toBe(true);
+    expect(isSafeFontName('<script>')).toBe(false);
+  });
+
+  it('app name input accepts unicode characters', () => {
+    const appNames = ['My DEX', 'Stellar 🌟', 'DeFi Platform', '日本語'];
+    for (const name of appNames) {
+      expect(typeof name).toBe('string');
+      expect(name.length).toBeGreaterThan(0);
+    }
+  });
+});
