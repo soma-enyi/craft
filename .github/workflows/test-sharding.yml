@@ -1,0 +1,125 @@
+# Parallelized test sharding — splits the Vitest suite across 4 concurrent
+# workers, reducing CI runtime proportionally to shard count.
+#
+# Sharding strategy
+# -----------------
+# Shard count: 4
+#   - Each shard executes roughly 25 % of test files.
+#   - Spin-up cost per worker is ~15 s; suite currently runs ~60 s total,
+#     giving an effective ~45 s wall-clock with 4 shards (3× speedup after
+#     overhead). Revisit shard count when any shard regularly exceeds 30 s.
+#
+# Shard safety requirements (enforced by vitest.config.ts `sequence.shuffle: false`)
+#   - Tests must not rely on shared mutable global state across describe blocks.
+#   - Each test file must be independently runnable in any order.
+#   - Top-level `vi.mock()` declarations are fine; singleton state must be
+#     reset in `beforeEach` so it does not bleed between tests in a shard.
+#
+# Result aggregation
+#   - Each shard uploads its JSON coverage report as an artifact.
+#   - The `merge-coverage` job downloads all shard artifacts and merges them
+#     with `vitest merge-reports`, producing a single combined coverage summary.
+
+name: Parallelized Test Sharding
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Test shard ${{ matrix.shard }}/${{ strategy.job-total }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run test shard ${{ matrix.shard }}/4
+        run: |
+          npm run --workspace @craft/backend test -- \
+            --reporter=json \
+            --outputFile=coverage/shard-${{ matrix.shard }}.json \
+            --shard=${{ matrix.shard }}/4
+        env:
+          ARTIFACT_SIGNING_SECRET: test-artifact-signing-secret-32b!!
+
+      - name: Upload shard coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-shard-${{ matrix.shard }}
+          path: coverage/shard-${{ matrix.shard }}.json
+          retention-days: 7
+
+  merge-coverage:
+    name: Merge coverage reports
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download all shard coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-shard-*
+          merge-multiple: true
+          path: coverage/shards
+
+      - name: Merge shard reports into combined summary
+        run: npx vitest merge-reports coverage/shards --reporter=text
+
+  frontend-test:
+    name: Frontend test shard ${{ matrix.shard }}/${{ strategy.job-total }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run frontend test shard ${{ matrix.shard }}/2
+        run: |
+          npm run --workspace @craft/frontend test -- \
+            --shard=${{ matrix.shard }}/2
