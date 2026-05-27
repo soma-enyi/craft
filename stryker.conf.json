@@ -1,20 +1,19 @@
 {
   "$schema": "https://raw.githubusercontent.com/stryker-mutator/stryker-js/master/packages/api/schema/stryker-core.json",
   "mutate": [
-    "apps/backend/src/services/auth.service.ts",
-    "apps/backend/src/services/payment.service.ts",
-    "apps/backend/src/services/deployment-pipeline.service.ts",
-    "apps/backend/src/services/deployment-queue.service.ts",
-    "apps/backend/src/services/deployment-monitor.service.ts",
-    "apps/backend/src/services/deployment-rollback.service.ts"
+    "apps/backend/src/services/**/*.ts",
+    "!apps/backend/src/services/**/*.test.ts",
+    "!apps/backend/src/services/**/*.property.test.ts",
+    "!apps/backend/src/services/**/*.integration.test.ts",
+    "!apps/backend/src/services/**/*.snapshot.test.ts",
+    "!apps/backend/src/services/**/*.helpers.ts",
+    "!apps/backend/src/services/__fixtures__/**"
   ],
   "testRunner": "vitest",
   "testPathPattern": [
-    "apps/backend/src/services/auth.service.test.ts",
-    "apps/backend/src/services/auth.integration.test.ts",
-    "apps/backend/src/services/payment.service.test.ts",
-    "apps/backend/src/services/deployment-pipeline.service.test.ts",
-    "apps/backend/tests/deployment/**/*.test.ts"
+    "apps/backend/src/services/**/*.test.ts",
+    "apps/backend/src/services/**/*.integration.test.ts",
+    "apps/backend/src/services/**/*.property.test.ts"
   ],
   "reporters": [
     "progress-append-only",
@@ -35,37 +34,162 @@
   },
   "perFile": {
     "thresholds": {
-      "high": 75,
-      "medium": 65,
-      "low": 55
+      "high": 80,
+      "medium": 70,
+      "low": 60
     },
     "files": {
-      "apps/backend/src/services/deployment-pipeline.service.ts": {
-        "high": 75,
-        "medium": 65,
-        "low": 55
-      },
-      "apps/backend/src/services/deployment-queue.service.ts": {
-        "high": 75,
-        "medium": 65,
-        "low": 55
-      },
-      "apps/backend/src/services/deployment-monitor.service.ts": {
-        "high": 75,
-        "medium": 65,
-        "low": 55
-      },
-      "apps/backend/src/services/deployment-rollback.service.ts": {
-        "high": 75,
-        "medium": 65,
-        "low": 55
-      },
       "apps/backend/src/services/auth.service.ts": {
         "high": 80,
         "medium": 70,
         "low": 60
       },
       "apps/backend/src/services/payment.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/deployment-pipeline.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/deployment-update.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/deployment.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/vercel.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/github.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/github-push.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/stellar-network.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/template.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/preview.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/customization-draft.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/health-monitor.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/analytics.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/code-generator.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/template-generator.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/template-cloning.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/github-credential.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/github-repository-update.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/stellar-account-validator.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/stellar-asset-validator.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/soroban-contract-validator.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/error-report.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/artifact-signing.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/config-validator.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/syntax-validator.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/package-json-validator.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/deployment-logs.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/github-app-auth.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/github-to-vercel-deployment.service.ts": {
+        "high": 80,
+        "medium": 70,
+        "low": 60
+      },
+      "apps/backend/src/services/rollout-strategy.service.ts": {
         "high": 80,
         "medium": 70,
         "low": 60
