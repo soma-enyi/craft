@@ -10,6 +10,7 @@
  */
 
 import { createClient } from '@/lib/supabase/server';
+import { retryWithBackoff, isRetryableError, type RetryOptions } from '@/lib/retry/exponential-backoff';
 import type { CustomizationConfig, GeneratedFile, DeploymentStatusType } from '@craft/types';
 import {
   githubPushService,
@@ -92,6 +93,15 @@ export interface UpdateRepositoryResult {
 // ---------------------------------------------------------------------------
 
 export class GitHubRepositoryUpdateService {
+  // Retry configuration for GitHub API calls
+  private readonly retryOptions: RetryOptions = {
+    maxAttempts: 5,
+    initialDelayMs: 200,
+    maxDelayMs: 30000, // 30 seconds
+    maxTotalDurationMs: 5 * 60 * 1000, // 5 minutes
+    backoffMultiplier: 2,
+  };
+
   constructor(
     private readonly _githubPushService: Pick<GitHubPushService, 'pushGeneratedCode'> = githubPushService,
     private readonly _codeGenerator: Pick<CodeGeneratorService, 'generate'> = codeGeneratorService,
@@ -166,7 +176,7 @@ export class GitHubRepositoryUpdateService {
       created_at: new Date().toISOString(),
     });
 
-    // ── GitHub push ──────────────────────────────────────────────────────────
+    // ── GitHub push with retry ───────────────────────────────────────────────
     const branch = params.branch ?? 'main';
     const commitMessage =
       params.commitMessage ?? `chore: update generated workspace (${new Date().toISOString()})`;
@@ -175,14 +185,30 @@ export class GitHubRepositoryUpdateService {
 
     let commitRef: GitHubCommitReference;
     try {
-      commitRef = await this._githubPushService.pushGeneratedCode({
-        owner,
-        repo,
-        token,
-        files,
-        branch,
-        commitMessage,
-      });
+      // Retry on transient failures (5xx, network, rate limit)
+      // Don't retry on auth errors (4xx except 429) to fail fast
+      const retryResult = await retryWithBackoff(
+        () =>
+          this._githubPushService.pushGeneratedCode({
+            owner,
+            repo,
+            token,
+            files,
+            branch,
+            commitMessage,
+          }),
+        this.retryOptions,
+      );
+
+      if (!retryResult.success) {
+        throw retryResult.error;
+      }
+
+      commitRef = retryResult.data;
+      const attempts = retryResult.attempts;
+      if (attempts > 1) {
+        console.log(`[github-repository-update] GitHub push succeeded after ${attempts} attempts`);
+      }
     } catch (err: unknown) {
       // Map push errors to service error codes, then rollback
       let serviceError: ServiceError;
@@ -201,6 +227,7 @@ export class GitHubRepositoryUpdateService {
         };
       }
 
+      console.error('[github-repository-update] Push failed after retries:', serviceError);
       await this._rollback(updateId, deploymentId, previousState);
       throw serviceError;
     }

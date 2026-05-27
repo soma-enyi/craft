@@ -323,4 +323,88 @@ describe('GitHubRepositoryUpdateService.updateRepository', () => {
     const rollbackUpdateCall = mockUpdate.mock.calls[1][0];
     expect(rollbackUpdateCall).toMatchObject({ status: 'rolled_back' });
   });
+
+  it('retries on transient errors (5xx, network) and succeeds after retry', async () => {
+    setupDeploymentFetch(makeDeployment());
+    mockGenerate.mockReturnValueOnce({ generatedFiles: makeFiles() });
+    setupInsert();
+    // First call fails with 503, second succeeds
+    mockPushGeneratedCode
+      .mockRejectedValueOnce(new GitHubPushApiError('Service unavailable', 503))
+      .mockResolvedValueOnce(makeCommitRef());
+    setupUpdate(); // persist state update
+
+    const result = await service.updateRepository(baseParams);
+
+    expect(result).toMatchObject({ deploymentId: DEPLOYMENT_ID });
+    // Should have retried after the 503 error
+    expect(mockPushGeneratedCode).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry on non-retryable errors (4xx)', async () => {
+    setupDeploymentFetch(makeDeployment());
+    mockGenerate.mockReturnValueOnce({ generatedFiles: makeFiles() });
+    setupInsert();
+    // 401 auth error should not be retried
+    mockPushGeneratedCode.mockRejectedValueOnce(new GitHubPushAuthError('Invalid token'));
+    setupUpdate(); // rollback
+
+    await expect(service.updateRepository(baseParams)).rejects.toMatchObject({
+      code: 'AUTH_FAILED',
+    });
+
+    // Should only be called once (no retry)
+    expect(mockPushGeneratedCode).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries on rate limit (429) with backoff', async () => {
+    setupDeploymentFetch(makeDeployment());
+    mockGenerate.mockReturnValueOnce({ generatedFiles: makeFiles() });
+    setupInsert();
+    // Rate limit should be retried
+    mockPushGeneratedCode
+      .mockRejectedValueOnce(new GitHubPushApiError('Rate limited', 429))
+      .mockResolvedValueOnce(makeCommitRef());
+    setupUpdate(); // persist state update
+
+    const result = await service.updateRepository(baseParams);
+
+    expect(result).toMatchObject({ deploymentId: DEPLOYMENT_ID });
+    // Should have retried after rate limit
+    expect(mockPushGeneratedCode).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries on network errors and succeeds after multiple retries', async () => {
+    setupDeploymentFetch(makeDeployment());
+    mockGenerate.mockReturnValueOnce({ generatedFiles: makeFiles() });
+    setupInsert();
+    // Network error should be retried
+    mockPushGeneratedCode
+      .mockRejectedValueOnce(new GitHubPushNetworkError('ECONNREFUSED'))
+      .mockRejectedValueOnce(new GitHubPushNetworkError('timeout'))
+      .mockResolvedValueOnce(makeCommitRef());
+    setupUpdate(); // persist state update
+
+    const result = await service.updateRepository(baseParams);
+
+    expect(result).toMatchObject({ deploymentId: DEPLOYMENT_ID });
+    // Should have retried twice
+    expect(mockPushGeneratedCode).toHaveBeenCalledTimes(3);
+  });
+
+  it('fails after max retries exceeded for transient errors', async () => {
+    setupDeploymentFetch(makeDeployment());
+    mockGenerate.mockReturnValueOnce({ generatedFiles: makeFiles() });
+    setupInsert();
+    // Always fail with retryable error
+    mockPushGeneratedCode.mockRejectedValue(new GitHubPushApiError('Service unavailable', 503));
+    setupUpdate(); // rollback
+
+    await expect(service.updateRepository(baseParams)).rejects.toMatchObject({
+      code: 'NETWORK_ERROR',
+    });
+
+    // Should have retried multiple times
+    expect(mockPushGeneratedCode.mock.calls.length).toBeGreaterThan(1);
+  });
 });
