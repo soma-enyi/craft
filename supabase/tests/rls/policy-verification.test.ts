@@ -103,6 +103,14 @@ const policy = {
 
     // templates
     templates_select: (row: Row, _uid: Uid) => row.is_active === true,
+
+    // github_vercel_deployments — migration 008
+    // Service role: ALL (full access); Authenticated: SELECT (all rows, no user filter)
+    github_vercel_select: (_row: Row, uid: Uid) => uid !== null,
+
+    // deployment_updates — migration 009
+    // Authenticated: ALL with USING (auth.uid() = user_id) and WITH CHECK (auth.uid() = user_id)
+    deployment_updates_all: (row: Row, uid: Uid) => uid !== null && uid === row.user_id,
 };
 
 // ── 1. Service-role bypass ────────────────────────────────────────────────────
@@ -112,13 +120,14 @@ describe('RLS: service_role bypass', () => {
     const logsSelect = policy.makeLogsSelect(table);
 
     const cases: Array<[string, (row: Row, uid: Uid) => boolean, Row]> = [
-        ['profiles SELECT',           policy.profiles_select,     { id: USER_B }],
-        ['profiles UPDATE',           policy.profiles_update,     { id: USER_B }],
-        ['deployments SELECT',        policy.deployments_select,  { user_id: USER_B }],
-        ['deployments DELETE',        policy.deployments_delete,  { user_id: USER_B }],
-        ['deployment_logs SELECT',    logsSelect,                 { deployment_id: DEP_B1 }],
-        ['customization_drafts DELETE', policy.drafts_delete,     { user_id: USER_B }],
-        ['templates SELECT (inactive)', policy.templates_select,  { is_active: false }],
+        ['profiles SELECT',                  policy.profiles_select,            { id: USER_B }],
+        ['profiles UPDATE',                  policy.profiles_update,            { id: USER_B }],
+        ['deployments SELECT',               policy.deployments_select,         { user_id: USER_B }],
+        ['deployments DELETE',               policy.deployments_delete,         { user_id: USER_B }],
+        ['deployment_logs SELECT',           logsSelect,                        { deployment_id: DEP_B1 }],
+        ['customization_drafts DELETE',      policy.drafts_delete,              { user_id: USER_B }],
+        ['templates SELECT (inactive)',      policy.templates_select,           { is_active: false }],
+        ['deployment_updates ALL (other)',   policy.deployment_updates_all,     { user_id: USER_B }],
     ];
 
     it.each(cases)('service_role bypasses %s', (_label, pred, row) => {
@@ -330,5 +339,109 @@ describe('RLS: indirect-join policy performance', () => {
         const elapsed = performance.now() - start;
 
         expect(elapsed).toBeLessThan(500);
+    });
+});
+
+// ── 6. github_vercel_deployments (migration 008) ──────────────────────────────
+
+describe('RLS: github_vercel_deployments — authenticated SELECT, service_role ALL', () => {
+    it('authenticated user can SELECT any row (no per-user filter)', () => {
+        expect(evaluate(policy.github_vercel_select, { id: 'gvd_1' }, auth.userA)).toBe(true);
+        expect(evaluate(policy.github_vercel_select, { id: 'gvd_1' }, auth.userB)).toBe(true);
+        expect(evaluate(policy.github_vercel_select, { id: 'gvd_2' }, auth.userC)).toBe(true);
+    });
+
+    it('anon is denied SELECT (uid is null)', () => {
+        expect(evaluate(policy.github_vercel_select, { id: 'gvd_1' }, auth.anon)).toBe(false);
+    });
+
+    it('service_role bypasses all policies and can SELECT any row', () => {
+        expect(evaluate(policy.github_vercel_select, { id: 'gvd_1' }, auth.serviceRole)).toBe(true);
+    });
+
+    it('service_role can access rows that authenticated users could not (anon restriction)', () => {
+        // Simulates service_role inserting a row that anon cannot read
+        const row = { id: 'gvd_private' };
+        expect(evaluate(policy.github_vercel_select, row, auth.serviceRole)).toBe(true);
+        expect(evaluate(policy.github_vercel_select, row, auth.anon)).toBe(false);
+    });
+});
+
+// ── 7. deployment_updates (migration 009) ─────────────────────────────────────
+
+describe('RLS: deployment_updates — per-user ALL policy', () => {
+    it('owner can SELECT own deployment_update rows', () => {
+        expect(evaluate(policy.deployment_updates_all, { user_id: USER_A }, auth.userA)).toBe(true);
+    });
+
+    it('non-owner is denied SELECT on another user row', () => {
+        expect(evaluate(policy.deployment_updates_all, { user_id: USER_B }, auth.userA)).toBe(false);
+    });
+
+    it('owner can INSERT (WITH CHECK passes)', () => {
+        expect(evaluate(policy.deployment_updates_all, { user_id: USER_A }, auth.userA)).toBe(true);
+    });
+
+    it('non-owner cannot INSERT for another user (WITH CHECK blocks)', () => {
+        expect(evaluate(policy.deployment_updates_all, { user_id: USER_B }, auth.userA)).toBe(false);
+    });
+
+    it('anon is denied all operations (uid is null)', () => {
+        expect(evaluate(policy.deployment_updates_all, { user_id: USER_A }, auth.anon)).toBe(false);
+    });
+
+    it('service_role bypasses ALL policy', () => {
+        expect(evaluate(policy.deployment_updates_all, { user_id: USER_A }, auth.serviceRole)).toBe(true);
+        expect(evaluate(policy.deployment_updates_all, { user_id: USER_B }, auth.serviceRole)).toBe(true);
+    });
+
+    it('cross-user isolation — USER_B cannot see USER_A rows', () => {
+        expect(evaluate(policy.deployment_updates_all, { user_id: USER_A }, auth.userB)).toBe(false);
+    });
+
+    it('owner UPDATE USING + WITH CHECK — both must pass for own row', () => {
+        const using = policy.deployment_updates_all;
+        const check = policy.deployment_updates_all;
+        const existing = { user_id: USER_A };
+        const newRow   = { user_id: USER_A };
+        expect(using(existing, USER_A) && check(newRow, USER_A)).toBe(true);
+    });
+
+    it('owner cannot reassign user_id to another user (WITH CHECK blocks)', () => {
+        const using = policy.deployment_updates_all;
+        const check = policy.deployment_updates_all;
+        const existing = { user_id: USER_A };
+        const newRow   = { user_id: USER_B }; // attempted ownership transfer
+        expect(using(existing, USER_A) && check(newRow, USER_A)).toBe(false);
+    });
+});
+
+// ── 8. Anonymous denial — all protected tables ────────────────────────────────
+
+describe('RLS: anonymous denial across all protected tables', () => {
+    const table = makeDeploymentsTable([{ id: DEP_A1, user_id: USER_A }]);
+    const logsSelect      = policy.makeLogsSelect(table);
+    const analyticsSelect = policy.makeAnalyticsSelect(table);
+
+    const anonCases: Array<[string, (row: Row, uid: Uid) => boolean, Row]> = [
+        ['profiles SELECT',                policy.profiles_select,          { id: USER_A }],
+        ['profiles UPDATE',                policy.profiles_update,          { id: USER_A }],
+        ['profiles INSERT',                policy.profiles_insert,          { id: USER_A }],
+        ['deployments SELECT',             policy.deployments_select,       { user_id: USER_A }],
+        ['deployments INSERT',             policy.deployments_insert,       { user_id: USER_A }],
+        ['deployments UPDATE',             policy.deployments_update,       { user_id: USER_A }],
+        ['deployments DELETE',             policy.deployments_delete,       { user_id: USER_A }],
+        ['deployment_logs SELECT',         logsSelect,                      { deployment_id: DEP_A1 }],
+        ['deployment_analytics SELECT',    analyticsSelect,                 { deployment_id: DEP_A1 }],
+        ['customization_drafts SELECT',    policy.drafts_select,            { user_id: USER_A }],
+        ['customization_drafts INSERT',    policy.drafts_insert,            { user_id: USER_A }],
+        ['customization_drafts UPDATE',    policy.drafts_update,            { user_id: USER_A }],
+        ['customization_drafts DELETE',    policy.drafts_delete,            { user_id: USER_A }],
+        ['github_vercel_deployments SELECT', policy.github_vercel_select,   { id: 'gvd_1' }],
+        ['deployment_updates ALL',         policy.deployment_updates_all,   { user_id: USER_A }],
+    ];
+
+    it.each(anonCases)('anon is denied: %s', (_label, pred, row) => {
+        expect(evaluate(pred, row, auth.anon)).toBe(false);
     });
 });
