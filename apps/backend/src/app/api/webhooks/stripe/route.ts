@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { stripe } from '@/lib/stripe/client';
 import { paymentService } from '@/services/payment.service';
+import { webhookDLQ } from '@/lib/webhook-dlq/dead-letter-queue';
 
 const SUPPORTED_EVENTS = new Set([
     'checkout.session.completed',
@@ -11,12 +12,23 @@ const SUPPORTED_EVENTS = new Set([
     'invoice.payment_failed',
 ]);
 
+const MAX_ATTEMPTS = 3;
+
+// Register a reprocessing handler so DLQ entries can be retried via the admin endpoint.
+webhookDLQ.registerProcessor('stripe', async (entry) => {
+    const parsed = JSON.parse(entry.payload);
+    if (!SUPPORTED_EVENTS.has(parsed.type)) return;
+    await paymentService.handleWebhook(parsed);
+});
+
 /**
  * POST /api/webhooks/stripe
  *
  * Receives Stripe webhook events, verifies the signature, and delegates
  * to the payment service. Returns 200 for all successfully verified events
  * (including unsupported types) so Stripe does not retry unnecessarily.
+ *
+ * Failed events that exceed MAX_ATTEMPTS are captured in the DLQ.
  */
 export async function POST(req: NextRequest) {
     const body = await req.text();
@@ -52,14 +64,18 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ received: true });
     }
 
-    try {
-        await paymentService.handleWebhook(event);
-        return NextResponse.json({ received: true });
-    } catch (error: any) {
-        console.error('Error processing webhook:', error);
-        return NextResponse.json(
-            { error: 'Webhook processing failed' },
-            { status: 500 }
-        );
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+            await paymentService.handleWebhook(event);
+            return NextResponse.json({ received: true });
+        } catch (error: any) {
+            lastError = error;
+            console.error(`Stripe webhook attempt ${attempt}/${MAX_ATTEMPTS} failed:`, error);
+        }
     }
+
+    webhookDLQ.capture('stripe', event.type, body, lastError?.message ?? 'Unknown error', MAX_ATTEMPTS);
+    // Return 200 so Stripe stops retrying — the event is safely in the DLQ.
+    return NextResponse.json({ received: true, dlq: true });
 }

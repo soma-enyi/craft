@@ -1,11 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyGitHubWebhookSignature } from '@/lib/github/webhook-verification';
 import { createLogger, resolveCorrelationId, CORRELATION_ID_HEADER } from '@/lib/api/logger';
+import { webhookDLQ } from '@/lib/webhook-dlq/dead-letter-queue';
 
 const SUPPORTED_EVENTS = new Set([
     'push',
     'ping',
 ]);
+
+const MAX_ATTEMPTS = 3;
+
+// Register a reprocessing handler so DLQ entries can be retried via the admin endpoint.
+webhookDLQ.registerProcessor('github', async (entry) => {
+    const payload = JSON.parse(entry.payload);
+    if (entry.eventType === 'push') {
+        const log = createLogger({ correlationId: 'dlq-reprocess', service: 'github-webhook' });
+        await handlePushEvent(payload, log);
+    }
+});
 
 /**
  * POST /api/webhooks/github
@@ -80,25 +92,28 @@ export async function POST(req: NextRequest) {
         return res;
     }
 
-    try {
-        if (eventType === 'push') {
-            await handlePushEvent(payload, log);
-        } else if (eventType === 'ping') {
-            log.info('Ping event received');
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+            if (eventType === 'push') {
+                await handlePushEvent(payload, log);
+            } else if (eventType === 'ping') {
+                log.info('Ping event received');
+            }
+            const res = NextResponse.json({ received: true, processed: true });
+            res.headers.set(CORRELATION_ID_HEADER, correlationId);
+            return res;
+        } catch (error: any) {
+            lastError = error;
+            log.error(`Webhook attempt ${attempt}/${MAX_ATTEMPTS} failed`, error);
         }
-
-        const res = NextResponse.json({ received: true, processed: true });
-        res.headers.set(CORRELATION_ID_HEADER, correlationId);
-        return res;
-    } catch (error: any) {
-        log.error('Error processing webhook', error);
-        const res = NextResponse.json(
-            { error: 'Webhook processing failed' },
-            { status: 500 }
-        );
-        res.headers.set(CORRELATION_ID_HEADER, correlationId);
-        return res;
     }
+
+    webhookDLQ.capture('github', eventType, body, lastError?.message ?? 'Unknown error', MAX_ATTEMPTS);
+    // Return 200 so GitHub stops retrying — the event is safely in the DLQ.
+    const res = NextResponse.json({ received: true, processed: false, dlq: true });
+    res.headers.set(CORRELATION_ID_HEADER, correlationId);
+    return res;
 }
 
 /**

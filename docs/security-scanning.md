@@ -350,3 +350,44 @@ chmod +x scripts/security-scan.sh
 - [Dependency Management](./dependencies.md)
 - [CI/CD Pipeline](./deployment-guide.md)
 - [npm audit Documentation](https://docs.npmjs.com/cli/v8/commands/npm-audit)
+
+---
+
+## HTTP Security Headers
+
+Security headers are applied to all `/api/*` responses via `next.config.js`. The policy is based on the [OWASP Secure Headers Project](https://owasp.org/www-project-secure-headers/).
+
+### Applied Headers
+
+| Header | Value | Purpose |
+|---|---|---|
+| `Content-Security-Policy` | see below | Prevents XSS and data injection |
+| `Strict-Transport-Security` | `max-age=63072000; includeSubDomains; preload` | Enforces HTTPS |
+| `X-Content-Type-Options` | `nosniff` | Prevents MIME-type sniffing |
+| `X-Frame-Options` | `DENY` | Prevents clickjacking |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` | Limits referrer leakage |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=()` | Disables unused browser APIs |
+
+### Content Security Policy Directives
+
+```
+default-src 'self';
+script-src 'self';
+style-src 'self' 'unsafe-inline';
+img-src 'self' data: https:;
+font-src 'self';
+connect-src 'self' https://*.supabase.co https://api.stripe.com
+            https://api.vercel.com https://horizon-testnet.stellar.org
+            https://horizon.stellar.org;
+frame-src 'none';
+object-src 'none';
+base-uri 'self';
+form-action 'self';
+upgrade-insecure-requests
+```
+
+### Development vs Production
+
+In `NODE_ENV=development` the policy is sent as `Content-Security-Policy-Report-Only` so violations appear in the browser console without blocking requests. In production it is enforced via `Content-Security-Policy`.
+
+To adjust directives, edit `next.config.js` (`CSP_DIRECTIVES` object). The canonical utility that produces the same set of headers programmatically lives in `src/lib/api/security-headers.ts`.
