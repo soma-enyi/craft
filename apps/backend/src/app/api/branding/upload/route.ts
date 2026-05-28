@@ -7,10 +7,14 @@ import { validateBrandingFile } from '@/lib/customization/validate-branding-file
  * Accepts a multipart/form-data upload with a single "file" field.
  * Validates type, extension, size, and content safety before accepting.
  *
- * On success returns { url } — currently a placeholder; wire to your storage
- * provider (e.g. Supabase Storage) in a follow-up.
+ * Enforces path-based namespacing: uploads are stored at {user_id}/{filename}
+ * RLS policies in storage bucket prevent cross-user access.
+ *
+ * On success returns { url } — the public URL to the uploaded asset.
+ * On validation failure returns { error, code } with 422 status.
+ * On storage error returns { error } with 500 status.
  */
-export const POST = withAuth(async (req: NextRequest) => {
+export const POST = withAuth(async (req: NextRequest, { supabase, user }) => {
     let formData: FormData;
     try {
         formData = await req.formData();
@@ -30,6 +34,34 @@ export const POST = withAuth(async (req: NextRequest) => {
         return NextResponse.json({ error: result.error, code: result.code }, { status: 422 });
     }
 
-    // TODO: upload buffer to Supabase Storage / S3 and return the real URL
-    return NextResponse.json({ url: null, message: 'File validated successfully. Storage not yet wired.' }, { status: 200 });
+    // Enforce path-based namespacing: user_id/filename
+    const storagePath = `${user.id}/${file.name}`;
+
+    try {
+        const { data, error: uploadError } = await supabase.storage
+            .from('branding_assets')
+            .upload(storagePath, buffer, {
+                contentType: file.type,
+                upsert: true,
+            });
+
+        if (uploadError || !data) {
+            return NextResponse.json(
+                { error: uploadError?.message ?? 'Storage upload failed' },
+                { status: 500 },
+            );
+        }
+
+        // Return public URL to the uploaded asset
+        const { data: publicUrlData } = supabase.storage
+            .from('branding_assets')
+            .getPublicUrl(storagePath);
+
+        return NextResponse.json({ url: publicUrlData.publicUrl }, { status: 200 });
+    } catch (err: unknown) {
+        return NextResponse.json(
+            { error: err instanceof Error ? err.message : 'Storage upload failed' },
+            { status: 500 },
+        );
+    }
 });

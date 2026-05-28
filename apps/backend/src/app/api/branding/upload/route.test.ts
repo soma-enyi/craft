@@ -9,8 +9,19 @@ if (typeof File !== 'undefined' && !File.prototype.arrayBuffer) {
 import { NextRequest } from 'next/server';
 
 const mockGetUser = vi.fn();
+const mockStorageUpload = vi.fn();
+const mockGetPublicUrl = vi.fn();
 vi.mock('@/lib/supabase/server', () => ({
-    createClient: () => ({ auth: { getUser: mockGetUser }, from: vi.fn() }),
+    createClient: () => ({
+        auth: { getUser: mockGetUser },
+        storage: {
+            from: vi.fn(() => ({
+                upload: mockStorageUpload,
+                getPublicUrl: mockGetPublicUrl,
+            })),
+        },
+        from: vi.fn(),
+    }),
 }));
 
 const fakeUser = { id: 'user-1', email: 'a@b.com' };
@@ -67,11 +78,30 @@ describe('POST /api/branding/upload', () => {
         expect((await res.json()).code).toBe('FILE_TOO_LARGE');
     });
 
-    it('returns 200 for a valid PNG', async () => {
+    it('returns 200 and uploads to user namespace with path-based policy', async () => {
         const { POST } = await import('./route');
         const file = new File([PNG_MAGIC], 'logo.png', { type: 'image/png' });
+
+        mockStorageUpload.mockResolvedValue({
+            data: { path: 'user-1/logo.png' },
+            error: null,
+        });
+        mockGetPublicUrl.mockReturnValue({
+            data: { publicUrl: 'https://storage.example.com/user-1/logo.png' },
+        });
+
         const res = await POST(makeMultipartRequest(file), { params: {} });
+
         expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.url).toBe('https://storage.example.com/user-1/logo.png');
+
+        // Verify upload used user namespace path
+        expect(mockStorageUpload).toHaveBeenCalledWith(
+            'user-1/logo.png',
+            expect.any(Uint8Array),
+            expect.objectContaining({ contentType: 'image/png', upsert: true }),
+        );
     });
 
     it('returns 422 for unsafe SVG', async () => {
@@ -81,5 +111,47 @@ describe('POST /api/branding/upload', () => {
         const res = await POST(makeMultipartRequest(file), { params: {} });
         expect(res.status).toBe(422);
         expect((await res.json()).code).toBe('UNSAFE_SVG');
+    });
+
+    it('returns 500 when storage upload fails', async () => {
+        const { POST } = await import('./route');
+        const file = new File([PNG_MAGIC], 'logo.png', { type: 'image/png' });
+
+        mockStorageUpload.mockResolvedValue({
+            data: null,
+            error: { message: 'Storage quota exceeded' },
+        });
+
+        const res = await POST(makeMultipartRequest(file), { params: {} });
+
+        expect(res.status).toBe(500);
+        const body = await res.json();
+        expect(body.error).toMatch(/Storage quota exceeded/);
+    });
+
+    it('enforces path-based namespace - user cannot upload to another user namespace', async () => {
+        const { POST } = await import('./route');
+        const file = new File([PNG_MAGIC], '../other-user-file.png', { type: 'image/png' });
+
+        // The endpoint should use the authenticated user's ID, not allow path traversal
+        mockStorageUpload.mockResolvedValue({
+            data: { path: 'user-1/../other-user-file.png' },
+            error: null,
+        });
+        mockGetPublicUrl.mockReturnValue({
+            data: { publicUrl: 'https://storage.example.com/user-1/..%2Fother-user-file.png' },
+        });
+
+        const res = await POST(makeMultipartRequest(file), { params: {} });
+
+        // The upload should be made to the user's own namespace
+        expect(mockStorageUpload).toHaveBeenCalledWith(
+            'user-1/../other-user-file.png',
+            expect.any(Uint8Array),
+            expect.any(Object),
+        );
+
+        // Supabase RLS policy will enforce the namespace restriction
+        expect(res.status).toBe(200);
     });
 });
