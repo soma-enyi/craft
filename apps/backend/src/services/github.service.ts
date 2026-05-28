@@ -43,11 +43,16 @@ const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 32_000;
 
 /**
- * Executes `fn`, retrying up to MAX_RATE_LIMIT_RETRIES times on RATE_LIMITED
- * or NETWORK_ERROR responses with bounded exponential backoff.
+ * Executes `fn`, retrying up to MAX_RATE_LIMIT_RETRIES (3) times on RATE_LIMITED
+ * or NETWORK_ERROR responses, for a maximum of 4 total attempts.
  *
- * When GitHub supplies a `Retry-After` value it is used as the delay floor;
- * otherwise full-jitter exponential backoff is applied.
+ * Retry strategy — delay per attempt:
+ *   1. When GitHub returns a `Retry-After` header its value (in seconds) is used
+ *      as-is (converted to milliseconds) — honouring the server's back-pressure.
+ *   2. Otherwise full-jitter exponential backoff is applied:
+ *        delay = Math.random() * min(BACKOFF_BASE_MS * 2^attempt, BACKOFF_MAX_MS)
+ *      where BACKOFF_BASE_MS = 1_000 ms and BACKOFF_MAX_MS = 32_000 ms.
+ *      Full jitter spreads retries across the window to avoid thundering-herd spikes.
  *
  * Non-retryable errors (AUTH_FAILED, COLLISION, UNKNOWN) are re-thrown
  * immediately without consuming a retry slot.
