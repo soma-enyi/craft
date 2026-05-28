@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { withDeploymentAuth } from '@/lib/api/with-auth';
 import { analyticsService } from '@/services/analytics.service';
 
-export const GET = withDeploymentAuth(async (req: NextRequest, { params }) => {
+export const GET = withDeploymentAuth(async (req: NextRequest, { params, log, correlationId }) => {
     try {
         const searchParams = req.nextUrl.searchParams;
         const metricType = searchParams.get('metricType') || undefined;
@@ -16,9 +16,9 @@ export const GET = withDeploymentAuth(async (req: NextRequest, { params }) => {
 
         return NextResponse.json({ analytics, summary });
     } catch (error: any) {
-        console.error('Error getting analytics:', error);
+        log.error('Failed to get analytics', error, { deploymentId: params.id });
         return NextResponse.json(
-            { error: error.message || 'Failed to get analytics' },
+            { error: error.message || 'Failed to get analytics', correlationId },
             { status: 500 }
         );
     }

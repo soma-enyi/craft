@@ -53,6 +53,7 @@ export function withDeploymentAuth<TParams extends { id: string }>(
             .from('deployments')
             .select('user_id')
             .eq('id', ctx.params.id)
+            .is('deleted_at', null)
             .single();
 
         if (!deployment || deployment.user_id !== ctx.user.id) {
