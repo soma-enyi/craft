@@ -1114,6 +1114,259 @@ describe('VercelService — getDeploymentLogs', () => {
     });
 });
 
+// ── Token scope validation (Issue #648) ──────────────────────────────────────
+
+describe('Token scope validation', () => {
+    beforeEach(() => {
+        process.env.VERCEL_TOKEN = 'test_token';
+        delete process.env.VERCEL_TEAM_ID;
+    });
+
+    afterEach(() => {
+        delete process.env.VERCEL_TOKEN;
+        delete process.env.VERCEL_TEAM_ID;
+    });
+
+    describe('validateTokenScopes', () => {
+        it('returns valid when token has required scopes', async () => {
+            const { svc, mockFetch } = makeService();
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, {
+                    user: { email: 'user@example.com' },
+                    scopes: ['projects:read', 'deployments:write', 'teams:read'],
+                }),
+            );
+
+            const result = await svc.validateTokenScopes();
+
+            expect(result.valid).toBe(true);
+            expect(result.scopes).toContain('deployments:write');
+        });
+
+        it('returns invalid when token is missing deployment write scope', async () => {
+            const { svc, mockFetch } = makeService();
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, {
+                    user: { email: 'user@example.com' },
+                    scopes: ['projects:read', 'teams:read'],
+                }),
+            );
+
+            const result = await svc.validateTokenScopes();
+
+            expect(result.valid).toBe(false);
+            expect(result.missingScope).toBe('deployments:write');
+            expect(result.error).toMatch(/deployment/i);
+        });
+
+        it('returns invalid when team token is missing team scope', async () => {
+            const { svc, mockFetch } = makeService();
+            process.env.VERCEL_TEAM_ID = 'team_abc123';
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, {
+                    user: { email: 'user@example.com' },
+                    scopes: ['deployments:write', 'projects:write'],
+                }),
+            );
+
+            const result = await svc.validateTokenScopes();
+
+            expect(result.valid).toBe(false);
+            expect(result.missingScope).toBe('team');
+            expect(result.error).toMatch(/team scope/i);
+        });
+
+        it('returns valid when team token has team scope', async () => {
+            const { svc, mockFetch } = makeService();
+            process.env.VERCEL_TEAM_ID = 'team_abc123';
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, {
+                    user: { email: 'user@example.com' },
+                    scopes: ['teams:write', 'deployments:write', 'projects:write'],
+                }),
+            );
+
+            const result = await svc.validateTokenScopes();
+
+            expect(result.valid).toBe(true);
+        });
+
+        it('handles API errors gracefully', async () => {
+            const { svc, mockFetch } = makeService();
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(401, { error: { message: 'Unauthorized' } }),
+            );
+
+            const result = await svc.validateTokenScopes();
+
+            expect(result.valid).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+
+        it('handles network errors gracefully', async () => {
+            const { svc, mockFetch } = makeService();
+
+            mockFetch.mockRejectedValueOnce(new Error('Network timeout'));
+
+            const result = await svc.validateTokenScopes();
+
+            expect(result.valid).toBe(false);
+            expect(result.error).toMatch(/Network timeout/);
+        });
+
+        it('accepts alternative scope names for team', async () => {
+            const { svc, mockFetch } = makeService();
+            process.env.VERCEL_TEAM_ID = 'team_xyz';
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, {
+                    user: { email: 'user@example.com' },
+                    scopes: ['team:manage', 'deployments:write'],
+                }),
+            );
+
+            const result = await svc.validateTokenScopes();
+
+            expect(result.valid).toBe(true);
+        });
+
+        it('never logs token values', async () => {
+            const { svc, mockFetch } = makeService();
+            const warnSpy = vi.spyOn(console, 'warn');
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(401, { error: { message: 'Unauthorized' } }),
+            );
+
+            await svc.validateTokenScopes();
+
+            // Verify that token value is never logged
+            expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('test_token'));
+            warnSpy.mockRestore();
+        });
+    });
+});
+
+// ── Blue-green alias promotion (Issue #645) ──────────────────────────────────
+
+describe('Blue-green alias promotion', () => {
+    beforeEach(() => {
+        process.env.VERCEL_TOKEN = 'test_token';
+    });
+
+    afterEach(() => {
+        delete process.env.VERCEL_TOKEN;
+    });
+
+    describe('promoteToProduction', () => {
+        it('promotes staging deployment to production alias', async () => {
+            const { svc, mockFetch } = makeService();
+
+            // Mock listDeploymentAliases to return current production alias
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, {
+                    aliases: [
+                        {
+                            uid: 'alias_prod',
+                            alias: 'example.com',
+                            created: '2024-01-01T00:00:00Z',
+                            redirect: 'dpl_old_prod',
+                        },
+                    ],
+                }),
+            );
+
+            // Mock assignAliasToDeployment
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, {
+                    uid: 'alias_prod',
+                    alias: 'example.com',
+                    created: '2024-01-01T00:00:00Z',
+                    redirect: null,
+                }),
+            );
+
+            const result = await svc.promoteToProduction('dpl_staging', 'example.com');
+
+            expect(result.success).toBe(true);
+            expect(result.previousProductionDeploymentId).toBe('dpl_old_prod');
+        });
+
+        it('returns undefined previousProductionDeploymentId when no prior production deployment', async () => {
+            const { svc, mockFetch } = makeService();
+
+            // Mock listDeploymentAliases with no existing alias
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, { aliases: [] }),
+            );
+
+            // Mock assignAliasToDeployment
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, {
+                    uid: 'alias_prod',
+                    alias: 'example.com',
+                }),
+            );
+
+            const result = await svc.promoteToProduction('dpl_staging', 'example.com');
+
+            expect(result.success).toBe(true);
+            expect(result.previousProductionDeploymentId).toBeUndefined();
+        });
+
+        it('throws on promotion failure', async () => {
+            const { svc, mockFetch } = makeService();
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, { aliases: [] }),
+            );
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(429, { error: { message: 'Rate limited' } }),
+            );
+
+            await expect(svc.promoteToProduction('dpl_staging', 'example.com')).rejects.toMatchObject({
+                code: 'RATE_LIMITED',
+            });
+        });
+    });
+
+    describe('rollbackProduction', () => {
+        it('rolls back production alias to previous deployment', async () => {
+            const { svc, mockFetch } = makeService();
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, {
+                    uid: 'alias_prod',
+                    alias: 'example.com',
+                    created: '2024-01-01T00:00:00Z',
+                }),
+            );
+
+            const result = await svc.rollbackProduction('dpl_previous_prod', 'example.com');
+
+            expect(result.success).toBe(true);
+        });
+
+        it('throws on rollback failure', async () => {
+            const { svc, mockFetch } = makeService();
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(500, { error: { message: 'Server error' } }),
+            );
+
+            await expect(svc.rollbackProduction('dpl_previous', 'example.com')).rejects.toMatchObject({
+                code: 'UNKNOWN',
+            });
+        });
+    });
+});
+
 const MOCK_TOKEN = 'test_token';
 
 function makeResponse(

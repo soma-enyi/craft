@@ -253,6 +253,79 @@ export class GitHubService {
         }
     }
 
+    // ── Branch protection rules (Issue #647) ──────────────────────────────────
+
+    /**
+     * Apply branch protection rules to a repository's production branch.
+     *
+     * Configuration (env vars):
+     *   GITHUB_PROTECTED_BRANCH — Branch name to protect (default: main)
+     *   GITHUB_REQUIRED_STATUS_CHECKS — Comma-separated list of required status checks
+     *
+     * Rules enforced:
+     *   - Require status checks to pass before merging
+     *   - Prevent force pushes
+     *   - Prevent branch deletion
+     *
+     * @param owner - Repository owner (e.g., "myorg")
+     * @param repo - Repository name
+     * @returns Success status and error details if the operation fails
+     */
+    async protectBranch(owner: string, repo: string): Promise<{ success: boolean; error?: string }> {
+        const protectedBranch = process.env.GITHUB_PROTECTED_BRANCH ?? 'main';
+        const statusChecks = (process.env.GITHUB_REQUIRED_STATUS_CHECKS ?? '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0);
+
+        const protectionPayload: Record<string, unknown> = {
+            required_status_checks: {
+                strict: true,
+                contexts: statusChecks.length > 0 ? statusChecks : ['ci/build'],
+            },
+            enforce_admins: true,
+            required_pull_request_reviews: null,
+            restrictions: null,
+            allow_force_pushes: false,
+            allow_deletions: false,
+            required_linear_history: false,
+            require_conversation_resolution: false,
+        };
+
+        try {
+            const res = await fetch(
+                `${GITHUB_API_BASE}/repos/${owner}/${repo}/branches/${protectedBranch}/protection`,
+                {
+                    method: 'PUT',
+                    headers: this.buildHeaders(),
+                    body: JSON.stringify(protectionPayload),
+                },
+            );
+
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({})) as Record<string, unknown>;
+                const message = (body.message as string) ?? `Branch protection failed: ${res.status}`;
+
+                // 404 means branch doesn't exist yet (expected after repo creation)
+                if (res.status === 404) {
+                    return {
+                        success: false,
+                        error: `Branch "${protectedBranch}" not found — create the branch before protecting it`,
+                    };
+                }
+
+                return { success: false, error: message };
+            }
+
+            return { success: true };
+        } catch (err: unknown) {
+            return {
+                success: false,
+                error: err instanceof Error ? err.message : 'Unknown error applying branch protection',
+            };
+        }
+    }
+
     /**
      * Delete a GitHub repository by owner and repo name (Issue #110).
      * Uses the shared request helper for consistent error handling.

@@ -53,6 +53,18 @@ function normalizeBody(raw: unknown): RequestBody | null {
 export const POST = withDeploymentAuth(async (req: NextRequest, { params, supabase }) => {
     const deploymentId = params.id;
 
+    // Validate Vercel token scopes before attempting deployment
+    const tokenValidation = await vercelService.validateTokenScopes();
+    if (!tokenValidation.valid) {
+        return NextResponse.json(
+            {
+                error: tokenValidation.error ?? 'Vercel token validation failed',
+                missingScope: tokenValidation.missingScope,
+            },
+            { status: 401 },
+        );
+    }
+
     let body: RequestBody = {};
     try {
         const raw = await req.json();

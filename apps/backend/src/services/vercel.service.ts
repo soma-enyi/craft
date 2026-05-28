@@ -286,6 +286,14 @@ export function validateVercelConfig(): VercelConfigValidationResult {
     return { valid: true };
 }
 
+export interface TokenScopeValidationResult {
+    valid: boolean;
+    scopes?: string[];
+    /** Present when valid is false. */
+    missingScope?: string;
+    error?: string;
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 interface FetchLike {
@@ -547,6 +555,77 @@ export class VercelService {
             return res.ok;
         } catch {
             return false;
+        }
+    }
+
+    // ── Token scope validation (Issue #648) ──────────────────────────────────
+
+    /**
+     * Validate that the Vercel token has required team and deployment scopes.
+     *
+     * For team-scoped deployments (VERCEL_TEAM_ID set), validates:
+     *   - Token must have 'team' scope
+     *   - Token must have 'deployments:write' or equivalent permissions
+     *
+     * Documentation of required scopes:
+     *   - teams:read     — Read team information
+     *   - projects:write — Create and manage Vercel projects
+     *   - deployments:write — Trigger and manage deployments
+     *   - (team scope)   — Implicit requirement when VERCEL_TEAM_ID is set
+     *
+     * @returns TokenScopeValidationResult with validation status and missing scope (if any)
+     */
+    async validateTokenScopes(): Promise<TokenScopeValidationResult> {
+        try {
+            const data = await this.request<{
+                user?: { email: string };
+                scopes?: string[];
+            }>('/v2/user', { method: 'GET' });
+
+            const scopes = (data.scopes ?? []) as string[];
+
+            // When team scope is configured, verify token has team-level permissions
+            if (this.teamId) {
+                const hasTeamScope = scopes.some((scope) =>
+                    scope.includes('team') || scope.includes('teams'),
+                );
+
+                if (!hasTeamScope) {
+                    return {
+                        valid: false,
+                        scopes,
+                        missingScope: 'team',
+                        error: `Token missing team scope for team "${this.teamId}" — token requires 'team' scope to deploy to team accounts`,
+                    };
+                }
+            }
+
+            // Verify deployment permissions
+            const hasDeploymentScope = scopes.some((scope) =>
+                scope.includes('deploy') || scope.includes('write'),
+            );
+
+            if (!hasDeploymentScope) {
+                return {
+                    valid: false,
+                    scopes,
+                    missingScope: 'deployments:write',
+                    error: 'Token missing deployment permissions — token requires deployment write scope to trigger deployments',
+                };
+            }
+
+            return { valid: true, scopes };
+        } catch (error: unknown) {
+            if (error instanceof VercelApiError) {
+                return {
+                    valid: false,
+                    error: `Token validation failed: ${error.message}`,
+                };
+            }
+            return {
+                valid: false,
+                error: error instanceof Error ? error.message : 'Failed to validate token scopes',
+            };
         }
     }
 
@@ -972,6 +1051,72 @@ export class VercelService {
             method: 'POST',
             body: JSON.stringify({ alias }),
         });
+    }
+
+    // ── Blue-green alias promotion (Issue #645) ──────────────────────────────
+
+    /**
+     * Deploy to staging alias first, atomically promoting to production.
+     * Stores the previous production deployment ID for rollback capability.
+     *
+     * @param projectId - Vercel project ID
+     * @param stagingAlias - Alias for staging (e.g., "staging.example.com")
+     * @param productionAlias - Alias for production (e.g., "example.com")
+     * @param currentProductionDeploymentId - Current production deployment ID (for rollback)
+     * @returns Result with staging and production deployment IDs
+     */
+    async promoteToProduction(
+        stagingDeploymentId: string,
+        productionAlias: string,
+    ): Promise<{ success: boolean; previousProductionDeploymentId?: string }> {
+        try {
+            // Get current production alias target to enable rollback
+            const aliases = await this.listDeploymentAliases(stagingDeploymentId);
+            const currentProductionAlias = aliases.find((a) => a.alias === productionAlias);
+            const previousProductionDeploymentId = currentProductionAlias?.redirect ?? undefined;
+
+            // Atomically reassign production alias to staging deployment
+            await this.assignAliasToDeployment(stagingDeploymentId, productionAlias);
+
+            return {
+                success: true,
+                previousProductionDeploymentId,
+            };
+        } catch (error: unknown) {
+            if (error instanceof VercelApiError) {
+                throw error;
+            }
+            throw new VercelApiError(
+                error instanceof Error ? error.message : 'Promotion to production failed',
+                'UNKNOWN',
+            );
+        }
+    }
+
+    /**
+     * Rollback production alias to previous deployment.
+     * Requires that previousProductionDeploymentId was stored from the previous promotion.
+     *
+     * @param previousProductionDeploymentId - Deployment ID to rollback to
+     * @param productionAlias - Alias to repoint
+     * @returns Success status
+     */
+    async rollbackProduction(
+        previousProductionDeploymentId: string,
+        productionAlias: string,
+    ): Promise<{ success: boolean }> {
+        try {
+            await this.assignAliasToDeployment(previousProductionDeploymentId, productionAlias);
+            return { success: true };
+        } catch (error: unknown) {
+            if (error instanceof VercelApiError) {
+                throw error;
+            }
+            throw new VercelApiError(
+                error instanceof Error ? error.message : 'Rollback failed',
+                'UNKNOWN',
+            );
+        }
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────

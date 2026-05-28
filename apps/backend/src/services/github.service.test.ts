@@ -419,4 +419,102 @@ describe('GitHubService', () => {
             expect(mockFetch).not.toHaveBeenCalled();
         });
     });
+
+    // ── Branch protection rules (Issue #647) ────────────────────────────────────
+
+    describe('protectBranch', () => {
+        beforeEach(() => {
+            process.env.GITHUB_PROTECTED_BRANCH = 'main';
+            delete process.env.GITHUB_REQUIRED_STATUS_CHECKS;
+            vi.clearAllMocks();
+        });
+
+        it('applies branch protection rules with default main branch', async () => {
+            mockFetch.mockResolvedValueOnce(makeJsonResponse(200, { protected: true }));
+
+            const result = await service.protectBranch('myorg', 'my-repo');
+
+            expect(result.success).toBe(true);
+            expect(mockFetch).toHaveBeenCalledWith(
+                'https://api.github.com/repos/myorg/my-repo/branches/main/protection',
+                expect.objectContaining({
+                    method: 'PUT',
+                    body: expect.stringContaining('"required_status_checks"'),
+                }),
+            );
+        });
+
+        it('uses custom protected branch from env var', async () => {
+            process.env.GITHUB_PROTECTED_BRANCH = 'develop';
+            mockFetch.mockResolvedValueOnce(makeJsonResponse(200, { protected: true }));
+
+            const result = await service.protectBranch('myorg', 'my-repo');
+
+            expect(result.success).toBe(true);
+            expect(mockFetch).toHaveBeenCalledWith(
+                'https://api.github.com/repos/myorg/my-repo/branches/develop/protection',
+                expect.any(Object),
+            );
+        });
+
+        it('uses custom required status checks from env var', async () => {
+            process.env.GITHUB_REQUIRED_STATUS_CHECKS = 'test, lint, build';
+            mockFetch.mockResolvedValueOnce(makeJsonResponse(200, { protected: true }));
+
+            const result = await service.protectBranch('myorg', 'my-repo');
+
+            expect(result.success).toBe(true);
+            const body = JSON.parse(
+                (mockFetch.mock.calls[0][1] as any).body as string,
+            ) as Record<string, unknown>;
+            expect(body.required_status_checks).toEqual({
+                strict: true,
+                contexts: ['test', 'lint', 'build'],
+            });
+        });
+
+        it('returns error when branch does not exist (404)', async () => {
+            mockFetch.mockResolvedValueOnce(
+                makeJsonResponse(404, { message: 'Not Found' }),
+            );
+
+            const result = await service.protectBranch('myorg', 'my-repo');
+
+            expect(result.success).toBe(false);
+            expect(result.error).toMatch(/not found/i);
+        });
+
+        it('returns error when protection fails (403 Forbidden)', async () => {
+            mockFetch.mockResolvedValueOnce(
+                makeJsonResponse(403, { message: 'Insufficient permissions' }),
+            );
+
+            const result = await service.protectBranch('myorg', 'my-repo');
+
+            expect(result.success).toBe(false);
+            expect(result.error).toMatch(/Insufficient permissions/);
+        });
+
+        it('handles network errors gracefully', async () => {
+            mockFetch.mockRejectedValueOnce(new Error('Network timeout'));
+
+            const result = await service.protectBranch('myorg', 'my-repo');
+
+            expect(result.success).toBe(false);
+            expect(result.error).toMatch(/Network timeout/);
+        });
+
+        it('prevents force pushes and branch deletion', async () => {
+            mockFetch.mockResolvedValueOnce(makeJsonResponse(200, { protected: true }));
+
+            await service.protectBranch('myorg', 'my-repo');
+
+            const body = JSON.parse(
+                (mockFetch.mock.calls[0][1] as any).body as string,
+            ) as Record<string, unknown>;
+            expect(body.allow_force_pushes).toBe(false);
+            expect(body.allow_deletions).toBe(false);
+            expect(body.enforce_admins).toBe(true);
+        });
+    });
 });

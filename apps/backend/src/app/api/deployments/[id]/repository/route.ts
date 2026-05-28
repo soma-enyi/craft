@@ -117,6 +117,18 @@ export const POST = withDeploymentAuth(async (req: NextRequest, { params, supaba
             userId: user.id,
         });
 
+        // Apply branch protection rules to the production branch
+        const [owner, repo] = repository.fullName.split('/');
+        const protectionResult = await githubService.protectBranch(owner, repo);
+
+        if (!protectionResult.success) {
+            // Log the error but don't fail the repository creation
+            // Protection can be applied manually if needed
+            console.warn(
+                `[Repository Creation] Branch protection failed for ${repository.fullName}: ${protectionResult.error}`,
+            );
+        }
+
         // Persist the repository URL and advance to the next deployment stage.
         await supabase
             .from('deployments')

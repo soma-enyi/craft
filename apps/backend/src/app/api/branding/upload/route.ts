@@ -14,29 +14,15 @@ import {
 /**
  * POST /api/branding/upload
  *
- * Upload and validate branding files with strict size and schema validation.
- * Validates file size, type, format, and optional metadata before processing.
+ * Enforces path-based namespacing: uploads are stored at {user_id}/{filename}
+ * RLS policies in storage bucket prevent cross-user access.
  *
- * Request body: multipart/form-data
- *   file     (required)  The file to upload
- *   metadata (optional)  JSON metadata with optional fields:
- *     - filename: string (max 255 chars)
- *     - description: string (max 1000 chars)
- *     - tags: string[] (max 20 tags, each 1-50 chars)
- *     - category: one of "branding", "content", "config", "other"
- *
- * Responses:
- *   200 — File validated successfully
- *   400 — Missing required fields or invalid format
- *   401 — Not authenticated
- *   413 — Request body exceeds size limit
- *   422 — File validation failed (invalid type, size, or safety)
- *   500 — Unexpected server error
- *
- * Issue: #607
- * Branch: feat/issue-071-upload-size-schema-validation
+ * On success returns { url } — the public URL to the uploaded asset.
+ * On validation failure returns { error, code } with 422 status.
+ * On storage error returns { error } with 500 status.
  */
-export const POST = withAuth(async (req: NextRequest) => {
+export const POST = withAuth(async (req: NextRequest, { supabase, user }) => {
+    let formData: FormData;
     try {
         // Validate request size before buffering entire body
         const contentLength = req.headers.get('content-length');
@@ -135,5 +121,48 @@ export const POST = withAuth(async (req: NextRequest) => {
         const msg = err instanceof Error ? err.message : 'Upload failed';
         console.error('[branding-upload] unexpected error:', err);
         return NextResponse.json({ error: msg }, { status: 500 });
+    }
+
+    const file = formData.get('file');
+    if (!(file instanceof File)) {
+        return NextResponse.json({ error: 'Missing "file" field' }, { status: 400 });
+    }
+
+    const buffer = new Uint8Array(await file.arrayBuffer());
+    const result = validateBrandingFile(file.name, file.type, file.size, buffer);
+
+    if (!result.valid) {
+        return NextResponse.json({ error: result.error, code: result.code }, { status: 422 });
+    }
+
+    // Enforce path-based namespacing: user_id/filename
+    const storagePath = `${user.id}/${file.name}`;
+
+    try {
+        const { data, error: uploadError } = await supabase.storage
+            .from('branding_assets')
+            .upload(storagePath, buffer, {
+                contentType: file.type,
+                upsert: true,
+            });
+
+        if (uploadError || !data) {
+            return NextResponse.json(
+                { error: uploadError?.message ?? 'Storage upload failed' },
+                { status: 500 },
+            );
+        }
+
+        // Return public URL to the uploaded asset
+        const { data: publicUrlData } = supabase.storage
+            .from('branding_assets')
+            .getPublicUrl(storagePath);
+
+        return NextResponse.json({ url: publicUrlData.publicUrl }, { status: 200 });
+    } catch (err: unknown) {
+        return NextResponse.json(
+            { error: err instanceof Error ? err.message : 'Storage upload failed' },
+            { status: 500 },
+        );
     }
 });

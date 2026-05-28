@@ -26,13 +26,17 @@ import { NextRequest } from 'next/server';
 const mockGetUser = vi.fn();
 const mockFrom = vi.fn();
 const mockCreateProject = vi.fn();
+const mockValidateTokenScopes = vi.fn();
 
 vi.mock('@/lib/supabase/server', () => ({
     createClient: () => ({ auth: { getUser: mockGetUser }, from: mockFrom }),
 }));
 
 vi.mock('@/services/vercel.service', () => ({
-    vercelService: { createProject: mockCreateProject },
+    vercelService: {
+        createProject: mockCreateProject,
+        validateTokenScopes: mockValidateTokenScopes,
+    },
 }));
 
 vi.mock('@/lib/env/env-template-generator', () => ({
@@ -76,6 +80,8 @@ describe('POST /api/deployments/[id]/vercel-project', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         mockGetUser.mockResolvedValue({ data: { user: fakeUser }, error: null });
+        // Default: token scopes are valid
+        mockValidateTokenScopes.mockResolvedValue({ valid: true, scopes: ['deployments:write'] });
     });
 
     async function handler() {
@@ -204,5 +210,57 @@ describe('POST /api/deployments/[id]/vercel-project', () => {
         });
         const res = await POST(req, { params: { id: 'dep-1' } } as never);
         expect(res.status).toBe(400);
+    });
+
+    it('returns 401 when token scopes are invalid', async () => {
+        mockValidateTokenScopes.mockResolvedValueOnce({
+            valid: false,
+            missingScope: 'deployments:write',
+            error: 'Token missing deployment permissions',
+        });
+        mockFrom.mockImplementation(makeFrom([
+            { data: { user_id: 'user-1' }, error: null },
+        ]));
+        const POST = await handler();
+        const res = await POST(makeRequest({}), { params: { id: 'dep-1' } } as never);
+        expect(res.status).toBe(401);
+        const body = await res.json();
+        expect(body.error).toMatch(/Token missing deployment/);
+        expect(body.missingScope).toBe('deployments:write');
+    });
+
+    it('returns 401 when team token lacks team scope', async () => {
+        mockValidateTokenScopes.mockResolvedValueOnce({
+            valid: false,
+            missingScope: 'team',
+            error: 'Token missing team scope for team deployment',
+        });
+        mockFrom.mockImplementation(makeFrom([
+            { data: { user_id: 'user-1' }, error: null },
+        ]));
+        const POST = await handler();
+        const res = await POST(makeRequest({}), { params: { id: 'dep-1' } } as never);
+        expect(res.status).toBe(401);
+        const body = await res.json();
+        expect(body.missingScope).toBe('team');
+    });
+
+    it('validates token scopes before deployment', async () => {
+        mockValidateTokenScopes.mockResolvedValueOnce({ valid: true, scopes: ['deployments:write'] });
+        mockFrom.mockImplementation(makeFrom([
+            { data: { user_id: 'user-1' }, error: null },
+            { data: fakeDeployment, error: null },
+            { data: { id: 'tmpl-1', category: 'dex' }, error: null },
+            { data: undefined, error: null },
+        ]));
+        mockCreateProject.mockResolvedValue({
+            id: 'prj_123',
+            name: 'my-dex',
+            url: 'my-dex.vercel.app',
+        });
+        const POST = await handler();
+        const res = await POST(makeRequest({}), { params: { id: 'dep-1' } } as never);
+        expect(mockValidateTokenScopes).toHaveBeenCalled();
+        expect(res.status).toBe(201);
     });
 });
