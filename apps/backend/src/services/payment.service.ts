@@ -182,6 +182,34 @@ export class PaymentService {
     }
 
     /**
+     * Create a Stripe Customer Portal session for the user.
+     * Returns the portal URL scoped to the user's Stripe customer ID.
+     * Throws if user has no Stripe customer record.
+     */
+    async createCustomerPortalSession(userId: string, returnUrl: string): Promise<{ url: string }> {
+        const supabase = createClient();
+
+        const { data: profile } = await supabase
+            .from('profiles')
+            .select('stripe_customer_id')
+            .eq('id', userId)
+            .single();
+
+        const customerId = profile?.stripe_customer_id;
+
+        if (!customerId) {
+            throw new Error('User does not have a Stripe customer record');
+        }
+
+        const session = await stripe.billingPortal.sessions.create({
+            customer: customerId,
+            return_url: returnUrl,
+        });
+
+        return { url: session.url };
+    }
+
+    /**
      * Handle Stripe webhook events
      *
      * IDEMPOTENT: Safe to call multiple times with the same event.

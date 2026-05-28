@@ -26,6 +26,7 @@ const mockCustomersCreate = vi.fn();
 const mockCheckoutSessionsCreate = vi.fn();
 const mockSubscriptionsRetrieve = vi.fn();
 const mockSubscriptionsUpdate = vi.fn();
+const mockBillingPortalSessionsCreate = vi.fn();
 
 vi.mock('@/lib/stripe/client', () => ({
     stripe: {
@@ -35,6 +36,7 @@ vi.mock('@/lib/stripe/client', () => ({
             retrieve: mockSubscriptionsRetrieve,
             update: mockSubscriptionsUpdate,
         },
+        billingPortal: { sessions: { create: mockBillingPortalSessionsCreate } },
     },
 }));
 
@@ -461,5 +463,87 @@ describe('PaymentService.handleWebhook – unhandled event type', () => {
 
         expect(mockFrom).not.toHaveBeenCalled();
         expect(mockSubscriptionsRetrieve).not.toHaveBeenCalled();
+    });
+});
+
+describe('PaymentService.createCustomerPortalSession', () => {
+    beforeEach(() => vi.clearAllMocks());
+
+    it('creates portal session for user with Stripe customer', async () => {
+        const userId = 'user-1';
+        const returnUrl = 'http://localhost:3000/billing';
+        const portalUrl = 'https://billing.stripe.com/session/test-123';
+
+        const selectQuery = makeQuery({ data: { stripe_customer_id: 'cus_1' } });
+        mockFrom.mockReturnValue(selectQuery);
+        mockBillingPortalSessionsCreate.mockResolvedValue({ url: portalUrl });
+
+        const result = await service.createCustomerPortalSession(userId, returnUrl);
+
+        expect(result).toEqual({ url: portalUrl });
+        expect(mockBillingPortalSessionsCreate).toHaveBeenCalledWith({
+            customer: 'cus_1',
+            return_url: returnUrl,
+        });
+    });
+
+    it('throws error when user has no Stripe customer record', async () => {
+        const userId = 'user-no-customer';
+        const returnUrl = 'http://localhost:3000/billing';
+
+        const selectQuery = makeQuery({ data: { stripe_customer_id: null } });
+        mockFrom.mockReturnValue(selectQuery);
+
+        await expect(
+            service.createCustomerPortalSession(userId, returnUrl)
+        ).rejects.toThrow('does not have a Stripe customer record');
+        expect(mockBillingPortalSessionsCreate).not.toHaveBeenCalled();
+    });
+
+    it('throws error when profile is null', async () => {
+        const userId = 'user-unknown';
+        const returnUrl = 'http://localhost:3000/billing';
+
+        const selectQuery = makeQuery({ data: null });
+        mockFrom.mockReturnValue(selectQuery);
+
+        await expect(
+            service.createCustomerPortalSession(userId, returnUrl)
+        ).rejects.toThrow('does not have a Stripe customer record');
+    });
+
+    it('passes correct customer ID and return URL to Stripe', async () => {
+        const userId = 'user-2';
+        const returnUrl = 'http://example.com/settings/billing';
+        const customerId = 'cus_abc123';
+
+        const selectQuery = makeQuery({ data: { stripe_customer_id: customerId } });
+        mockFrom.mockReturnValue(selectQuery);
+        mockBillingPortalSessionsCreate.mockResolvedValue({
+            url: 'https://billing.stripe.com/session/123',
+        });
+
+        await service.createCustomerPortalSession(userId, returnUrl);
+
+        expect(mockBillingPortalSessionsCreate).toHaveBeenCalledWith({
+            customer: customerId,
+            return_url: returnUrl,
+        });
+    });
+
+    it('returns portal URL from Stripe response', async () => {
+        const userId = 'user-3';
+        const returnUrl = 'http://localhost:3000/billing';
+        const expectedUrl = 'https://billing.stripe.com/session/abc-123-def';
+
+        const selectQuery = makeQuery({ data: { stripe_customer_id: 'cus_3' } });
+        mockFrom.mockReturnValue(selectQuery);
+        mockBillingPortalSessionsCreate.mockResolvedValue({
+            url: expectedUrl,
+        });
+
+        const result = await service.createCustomerPortalSession(userId, returnUrl);
+
+        expect(result.url).toBe(expectedUrl);
     });
 });

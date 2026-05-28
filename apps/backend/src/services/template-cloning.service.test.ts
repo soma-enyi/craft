@@ -5,7 +5,7 @@
  * Issue branch: issue-062-implement-template-cloning-logic
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import * as nodePath from 'path';
 import {
   TemplateCloningService,
@@ -45,6 +45,14 @@ function makeMockFs(state: MockFsState): FileSystemAdapter {
     },
     async exists(path) {
       return state.dirs.has(path) || state.files.has(path);
+    },
+    async readFile(path, _encoding) {
+      const content = state.files.get(path);
+      if (content === undefined) throw new Error(`File not found: ${path}`);
+      return content;
+    },
+    async writeFile(path, content) {
+      state.files.set(path, content);
     },
   };
 }
@@ -266,6 +274,159 @@ describe('TemplateCloningService', () => {
       await expect(svc.clone(null)).resolves.toBeDefined();
       await expect(svc.clone(undefined)).resolves.toBeDefined();
       await expect(svc.clone(42)).resolves.toBeDefined();
+    });
+  });
+
+  describe('placeholder injection', () => {
+    it('replaces all placeholders correctly in text files', async () => {
+      const srcBase = `${ALLOWED_SOURCE}/my-template`;
+      const state: MockFsState = {
+        dirs: new Set(),
+        files: new Map([
+          [`${srcBase}/config.json`, '{"appName": "{{APP_NAME}}", "version": "{{VERSION}}"}'],
+          [`${srcBase}/README.md`, '# {{APP_NAME}}\n\nVersion: {{VERSION}}'],
+        ]),
+      };
+      const svc = makeService(state);
+      const result = await svc.clone(makeRequest({
+        placeholders: { APP_NAME: 'MyApp', VERSION: '1.0.0' },
+      }));
+
+      expect(result.success).toBe(true);
+      const ws = result.workspacePath!;
+      const configContent = state.files.get(`${ws}/config.json`);
+      const readmeContent = state.files.get(`${ws}/README.md`);
+
+      expect(configContent).toBe('{"appName": "MyApp", "version": "1.0.0"}');
+      expect(readmeContent).toBe('# MyApp\n\nVersion: 1.0.0');
+    });
+
+    it('detects unreplaced placeholders and returns error', async () => {
+      const srcBase = `${ALLOWED_SOURCE}/my-template`;
+      const state: MockFsState = {
+        dirs: new Set(),
+        files: new Map([
+          [`${srcBase}/config.json`, '{"appName": "{{APP_NAME}}", "url": "{{API_URL}}"}'],
+        ]),
+      };
+      const svc = makeService(state);
+      const result = await svc.clone(makeRequest({
+        placeholders: { APP_NAME: 'MyApp' }, // Missing API_URL
+      }));
+
+      expect(result.success).toBe(false);
+      expect(result.errors.some((e) => e.message.includes('unreplaced placeholder'))).toBe(true);
+      expect(result.errors.some((e) => e.message.includes('{{API_URL}}'))).toBe(true);
+    });
+
+    it('skips binary files during placeholder injection', async () => {
+      const srcBase = `${ALLOWED_SOURCE}/my-template`;
+      const state: MockFsState = {
+        dirs: new Set(),
+        files: new Map([
+          [`${srcBase}/config.ts`, 'const name = "{{APP_NAME}}"'],
+          [`${srcBase}/image.png`, 'binary-data'],
+        ]),
+      };
+      const svc = makeService(state);
+      const result = await svc.clone(makeRequest({
+        placeholders: { APP_NAME: 'MyApp' },
+      }));
+
+      expect(result.success).toBe(true);
+      const ws = result.workspacePath!;
+      const tsContent = state.files.get(`${ws}/config.ts`);
+      const imgContent = state.files.get(`${ws}/image.png`);
+
+      expect(tsContent).toBe('const name = "MyApp"');
+      expect(imgContent).toBe('binary-data'); // Unchanged
+    });
+
+    it('handles files with multiple occurrences of same placeholder', async () => {
+      const srcBase = `${ALLOWED_SOURCE}/my-template`;
+      const state: MockFsState = {
+        dirs: new Set(),
+        files: new Map([
+          [`${srcBase}/package.json`, '{"name": "{{APP_NAME}}", "title": "{{APP_NAME}} App"}'],
+        ]),
+      };
+      const svc = makeService(state);
+      const result = await svc.clone(makeRequest({
+        placeholders: { APP_NAME: 'TestApp' },
+      }));
+
+      expect(result.success).toBe(true);
+      const ws = result.workspacePath!;
+      const content = state.files.get(`${ws}/package.json`);
+      expect(content).toBe('{"name": "TestApp", "title": "TestApp App"}');
+    });
+
+    it('works with no placeholders provided', async () => {
+      const srcBase = `${ALLOWED_SOURCE}/my-template`;
+      const state: MockFsState = {
+        dirs: new Set(),
+        files: new Map([
+          [`${srcBase}/README.md`, '# No placeholders here'],
+        ]),
+      };
+      const svc = makeService(state);
+      const result = await svc.clone(makeRequest());
+
+      expect(result.success).toBe(true);
+      expect(result.workspacePath).toBeDefined();
+    });
+
+    it('works with empty placeholders map', async () => {
+      const srcBase = `${ALLOWED_SOURCE}/my-template`;
+      const state: MockFsState = {
+        dirs: new Set(),
+        files: new Map([
+          [`${srcBase}/README.md`, '# No placeholders here'],
+        ]),
+      };
+      const svc = makeService(state);
+      const result = await svc.clone(makeRequest({ placeholders: {} }));
+
+      expect(result.success).toBe(true);
+      expect(result.workspacePath).toBeDefined();
+    });
+
+    it('handles placeholder names with underscores and numbers', async () => {
+      const srcBase = `${ALLOWED_SOURCE}/my-template`;
+      const state: MockFsState = {
+        dirs: new Set(),
+        files: new Map([
+          [`${srcBase}/config.ts`, 'const cfg = "{{APP_NAME_V2}}"'],
+        ]),
+      };
+      const svc = makeService(state);
+      const result = await svc.clone(makeRequest({
+        placeholders: { APP_NAME_V2: 'value' },
+      }));
+
+      expect(result.success).toBe(true);
+      const ws = result.workspacePath!;
+      const content = state.files.get(`${ws}/config.ts`);
+      expect(content).toBe('const cfg = "value"');
+    });
+
+    it('preserves file content unchanged if no placeholders are present', async () => {
+      const srcBase = `${ALLOWED_SOURCE}/my-template`;
+      const state: MockFsState = {
+        dirs: new Set(),
+        files: new Map([
+          [`${srcBase}/style.css`, 'body { color: red; }'],
+        ]),
+      };
+      const svc = makeService(state);
+      const result = await svc.clone(makeRequest({
+        placeholders: { APP_NAME: 'TestApp' },
+      }));
+
+      expect(result.success).toBe(true);
+      const ws = result.workspacePath!;
+      const content = state.files.get(`${ws}/style.css`);
+      expect(content).toBe('body { color: red; }');
     });
   });
 });

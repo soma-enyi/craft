@@ -5,6 +5,15 @@
  * before CodeGeneratorService applies customizations. Acts as a security and
  * isolation boundary between the orchestration layer and the filesystem.
  *
+ * After cloning, performs dynamic placeholder injection. All text files are scanned
+ * for placeholders matching the syntax {{PLACEHOLDER_NAME}} and replaced with
+ * corresponding user-provided values.
+ *
+ * Placeholder Syntax:
+ *   {{PLACEHOLDER_NAME}} - Case-sensitive. Replaced with the value from the
+ *   placeholders map. If not found, the placeholder remains unreplaced and
+ *   an error is returned.
+ *
  * Security guarantees:
  *   - All paths are resolved to canonical absolute form before any FS operation
  *   - Source and workspace paths are validated against configured allowed roots
@@ -30,6 +39,8 @@ export interface FileSystemAdapter {
   readdir(path: string, options: { recursive: true }): Promise<string[]>;
   copyFile(src: string, dest: string): Promise<void>;
   exists(path: string): Promise<boolean>;
+  readFile(path: string, encoding: BufferEncoding): Promise<string>;
+  writeFile(path: string, content: string): Promise<void>;
 }
 
 /** Real filesystem adapter wrapping fs/promises. */
@@ -53,6 +64,12 @@ export const realFsAdapter: FileSystemAdapter = {
     } catch {
       return false;
     }
+  },
+  async readFile(path, encoding) {
+    return await nodeFs.readFile(path, encoding);
+  },
+  async writeFile(path, content) {
+    await nodeFs.writeFile(path, content);
   },
 };
 
@@ -78,6 +95,8 @@ export interface CloneRequest {
   workspaceRoot: string;
   /** Caller-supplied unique identifier (e.g. UUID). Must not contain / \ or .. */
   runId: string;
+  /** Optional map of placeholder names to values. All required placeholders must be present. */
+  placeholders?: Record<string, string>;
 }
 
 export interface CloneError {
@@ -133,6 +152,19 @@ function isUnderAnyRoot(p: string, roots: string[]): boolean {
   return roots.some((root) => isUnder(p, root));
 }
 
+/** Returns true if the file extension indicates a text file. */
+function isTextFile(filePath: string): boolean {
+  const textExtensions = new Set([
+    '.txt', '.md', '.json', '.js', '.ts', '.tsx', '.jsx', '.css', '.scss',
+    '.html', '.xml', '.yaml', '.yml', '.toml', '.env', '.sh', '.bash',
+    '.ts', '.tsx', '.java', '.py', '.go', '.rs', '.cpp', '.c', '.h',
+    '.vue', '.svelte', '.astro', '.config', '.properties', '.gradle',
+    '.makefile', '.dockerfile', '.gitignore', '.eslintrc', '.prettierrc'
+  ]);
+  const ext = nodePath.extname(filePath).toLowerCase();
+  return textExtensions.has(ext) || filePath.match(/^\.[\w-]+$/) || !nodePath.extname(filePath);
+}
+
 // ── TemplateCloningService ────────────────────────────────────────────────────
 
 export class TemplateCloningService {
@@ -177,7 +209,8 @@ export class TemplateCloningService {
           return await this.cloneLocal(
             source as LocalTemplateSource,
             workspaceRoot,
-            runId
+            runId,
+            req?.placeholders
           );
         default:
           return {
@@ -219,7 +252,8 @@ export class TemplateCloningService {
   private async cloneLocal(
     source: LocalTemplateSource,
     workspaceRoot: string,
-    runId: string
+    runId: string,
+    placeholders?: Record<string, string>
   ): Promise<CloneResult> {
     // ── Resolve paths ──────────────────────────────────────────────────────────
     const resolvedSource = nodePath.resolve(source.path);
@@ -320,10 +354,94 @@ export class TemplateCloningService {
       }
     }
 
+    // ── Placeholder injection ──────────────────────────────────────────────────
+    if (placeholders && Object.keys(placeholders).length > 0) {
+      const injectionResult = await this.injectPlaceholders(workspacePath, placeholders);
+      if (!injectionResult.success) {
+        return injectionResult;
+      }
+      warnings.push(...injectionResult.errors);
+    }
+
     return {
       success: true,
       workspacePath,
       errors: warnings,
+    };
+  }
+
+  private async injectPlaceholders(
+    workspacePath: string,
+    placeholders: Record<string, string>
+  ): Promise<CloneResult> {
+    const errors: CloneError[] = [];
+    let entries: string[] = [];
+
+    try {
+      entries = await this.fs.readdir(workspacePath, { recursive: true });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        success: false,
+        errors: [{ path: workspacePath, message: `failed to read workspace for placeholder injection: ${msg}`, severity: 'error' }],
+      };
+    }
+
+    const placeholderRegex = /\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}/g;
+
+    for (const entry of entries) {
+      const filePath = nodePath.join(workspacePath, entry);
+
+      // Only process text files
+      if (!isTextFile(filePath)) {
+        continue;
+      }
+
+      try {
+        let content = await this.fs.readFile(filePath, 'utf-8');
+        const originalContent = content;
+
+        // Replace all placeholders
+        for (const [name, value] of Object.entries(placeholders)) {
+          content = content.replace(new RegExp(`\\{\\{${name}\\}\\}`, 'g'), value);
+        }
+
+        // Check for unreplaced placeholders
+        const unreplacedMatches = content.match(placeholderRegex);
+        if (unreplacedMatches) {
+          unreplacedMatches.forEach((match) => {
+            errors.push({
+              path: filePath,
+              message: `unreplaced placeholder found: ${match}`,
+              severity: 'error',
+            });
+          });
+        }
+
+        if (content !== originalContent) {
+          await this.fs.writeFile(filePath, content);
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push({
+          path: filePath,
+          message: `failed to inject placeholders: ${msg}`,
+          severity: 'warning',
+        });
+      }
+    }
+
+    // Return error if any unreplaced placeholders were found
+    if (errors.some((e) => e.severity === 'error')) {
+      return {
+        success: false,
+        errors,
+      };
+    }
+
+    return {
+      success: true,
+      errors,
     };
   }
 }

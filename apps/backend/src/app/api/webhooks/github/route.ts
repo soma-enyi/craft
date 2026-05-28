@@ -6,6 +6,8 @@ import { webhookDLQ } from '@/lib/webhook-dlq/dead-letter-queue';
 const SUPPORTED_EVENTS = new Set([
     'push',
     'ping',
+    'installation',
+    'installation_repositories',
 ]);
 
 const MAX_ATTEMPTS = 3;
@@ -92,20 +94,15 @@ export async function POST(req: NextRequest) {
         return res;
     }
 
-    let lastError: Error | null = null;
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        try {
-            if (eventType === 'push') {
-                await handlePushEvent(payload, log);
-            } else if (eventType === 'ping') {
-                log.info('Ping event received');
-            }
-            const res = NextResponse.json({ received: true, processed: true });
-            res.headers.set(CORRELATION_ID_HEADER, correlationId);
-            return res;
-        } catch (error: any) {
-            lastError = error;
-            log.error(`Webhook attempt ${attempt}/${MAX_ATTEMPTS} failed`, error);
+    try {
+        if (eventType === 'push') {
+            await handlePushEvent(payload, log);
+        } else if (eventType === 'ping') {
+            log.info('Ping event received');
+        } else if (eventType === 'installation') {
+            await handleInstallationEvent(payload, log);
+        } else if (eventType === 'installation_repositories') {
+            await handleInstallationRepositoriesEvent(payload, log);
         }
     }
 
@@ -195,5 +192,126 @@ async function handlePushEvent(payload: unknown, log: ReturnType<typeof createLo
             error: result.errorMessage,
         });
         throw new Error(result.errorMessage || 'Failed to trigger deployment');
+    }
+}
+
+/**
+ * Handles GitHub App installation events (created, deleted).
+ *
+ * On installation.created: stores the installation ID, granted organizations,
+ * and granted repositories in the database.
+ *
+ * On installation.deleted: removes the installation record and all associated
+ * org/repo access tracking from the database.
+ *
+ * @param payload - GitHub installation event payload
+ * @param log - Logger instance
+ */
+async function handleInstallationEvent(
+    payload: unknown,
+    log: ReturnType<typeof createLogger>
+) {
+    const installationPayload = payload as {
+        action?: string;
+        installation?: {
+            id?: number;
+            app_id?: number;
+            account?: {
+                login?: string;
+                type?: string;
+                id?: number;
+            };
+            repositories?: Array<{ id?: number; name?: string; full_name?: string }>;
+        };
+        repositories?: Array<{ id?: number; name?: string; full_name?: string }>;
+    };
+
+    const action = installationPayload.action;
+    const installationId = installationPayload.installation?.id;
+
+    log.info('GitHub installation event', { action, installationId });
+
+    if (!action || !installationId) {
+        log.warn('Missing action or installation ID in payload');
+        return;
+    }
+
+    // Dynamically import service to avoid circular dependencies
+    const { gitHubAppInstallationService } = await import(
+        '@/services/github-app-installation.service'
+    );
+
+    if (action === 'created') {
+        await gitHubAppInstallationService.handleInstallationCreated(
+            installationPayload as any
+        );
+        log.info('Installation created and stored', { installationId });
+    } else if (action === 'deleted') {
+        await gitHubAppInstallationService.handleInstallationDeleted(
+            installationPayload as any
+        );
+        log.info('Installation deleted', { installationId });
+    }
+}
+
+/**
+ * Handles GitHub App installation_repositories events (added, removed).
+ *
+ * On installation_repositories (added/removed): updates the stored access state
+ * to reflect the new set of granted repositories.
+ *
+ * @param payload - GitHub installation_repositories event payload
+ * @param log - Logger instance
+ */
+async function handleInstallationRepositoriesEvent(
+    payload: unknown,
+    log: ReturnType<typeof createLogger>
+) {
+    const reposPayload = payload as {
+        action?: string;
+        installation?: {
+            id?: number;
+            account?: {
+                login?: string;
+                type?: string;
+                id?: number;
+            };
+        };
+        repository_selection?: string;
+        repositories_added?: Array<{ id?: number; name?: string; full_name?: string }>;
+        repositories_removed?: Array<{ id?: number; name?: string; full_name?: string }>;
+    };
+
+    const action = reposPayload.action;
+    const installationId = reposPayload.installation?.id;
+
+    log.info('GitHub installation_repositories event', { action, installationId });
+
+    if (!action || !installationId) {
+        log.warn('Missing action or installation ID in payload');
+        return;
+    }
+
+    // Dynamically import service to avoid circular dependencies
+    const { gitHubAppInstallationService } = await import(
+        '@/services/github-app-installation.service'
+    );
+
+    if (action === 'added') {
+        await gitHubAppInstallationService.handleInstallationRepositoriesAdded(
+            reposPayload as any
+        );
+        log.info('Repositories added to installation', {
+            installationId,
+            count: reposPayload.repositories_added?.length || 0,
+        });
+    } else if (action === 'removed') {
+        await gitHubAppInstallationService.handleInstallationRepositoriesRemoved(
+            reposPayload as any
+        );
+        log.info('Repositories removed from installation', {
+            installationId,
+            count: reposPayload.repositories_removed?.length || 0,
+        });
     }
 }

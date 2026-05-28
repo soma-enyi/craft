@@ -28,8 +28,7 @@
     },
     "devDependencies": {
         "@craft/config": "*",
-        "@fast-check/vitest": "^1.1.1",
-        "@rolldown/binding-win32-x64-msvc": "^1.0.0-rc.17",
+        "@fast-check/vitest": "^0.4.1",
         "@testing-library/jest-dom": "^6.1.5",
         "@testing-library/react": "^14.1.2",
         "@testing-library/user-event": "^14.6.1",
