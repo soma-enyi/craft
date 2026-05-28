@@ -421,6 +421,64 @@ export class VercelService {
         }));
     }
 
+    /**
+     * List all environment variables for a Vercel project.
+     */
+    async listEnvVars(projectId: string): Promise<Array<{ id: string; key: string; value: string; target: string[]; type: string }>> {
+        type EnvResponse = {
+            envs?: Array<{ id: string; key: string; value: string; target: string[]; type: string }>;
+        };
+        const data = await this.request<EnvResponse>(
+            `/v9/projects/${projectId}/env`,
+            { method: 'GET' },
+        );
+
+        return data.envs ?? [];
+    }
+
+    /**
+     * Create a new environment variable on a Vercel project.
+     */
+    async createEnvVar(
+        projectId: string,
+        variable: { key: string; value: string; target: string[]; type: string }
+    ): Promise<{ id: string; key: string; value: string; target: string[]; type: string }> {
+        return this.request(
+            `/v9/projects/${projectId}/env`,
+            {
+                method: 'POST',
+                body: JSON.stringify(variable),
+            },
+        );
+    }
+
+    /**
+     * Update an environment variable on a Vercel project.
+     */
+    async updateEnvVar(
+        projectId: string,
+        envId: string,
+        patch: { value?: string; type?: string }
+    ): Promise<{ id: string; key: string; value: string; target: string[]; type: string }> {
+        return this.request(
+            `/v9/projects/${projectId}/env/${envId}`,
+            {
+                method: 'PATCH',
+                body: JSON.stringify(patch),
+            },
+        );
+    }
+
+    /**
+     * Delete an environment variable from a Vercel project.
+     */
+    async deleteEnvVar(projectId: string, envId: string): Promise<void> {
+        await this.request(
+            `/v9/projects/${projectId}/env/${envId}`,
+            { method: 'DELETE' },
+        );
+    }
+
     async assignAliasToDeployment(deploymentId: string, alias: string): Promise<VercelAlias> {
         const data = await this.request<Record<string, unknown>>(
             `/v2/deployments/${deploymentId}/aliases`,
