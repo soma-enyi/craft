@@ -30,7 +30,14 @@ export type StellarErrorCode =
   | 'MALFORMED_TRANSACTION'
   | 'ENDPOINT_UNREACHABLE'
   | 'RATE_LIMITED'
-  | 'UNKNOWN_ERROR';
+  | 'UNKNOWN_ERROR'
+  | 'SOROBAN_CONTRACT_ERROR'
+  | 'SOROBAN_HOST_FUNCTION_ERROR'
+  | 'SOROBAN_CONTRACT_PANIC'
+  | 'SOROBAN_RESOURCE_LIMIT_EXCEEDED'
+  | 'SOROBAN_STORAGE_ERROR'
+  | 'SOROBAN_AUTH_ERROR'
+  | 'SOROBAN_WASM_ERROR';
 
 /**
  * Parsed Stellar error with code and user-friendly information.
@@ -145,6 +152,136 @@ const OPERATION_RESULT_CODES: Record<string, { title: string; message: string; r
   'opUNDER_FUNDED': {
     title: 'Insufficient Reserve',
     message: 'The account does not maintain the minimum reserve. Add funds to increase reserve.',
+    retryable: false,
+  },
+};
+
+/**
+ * Maps Soroban contract error codes to user-friendly messages.
+ * Covers host function errors, contract panics, and resource limit errors.
+ *
+ * @see https://developers.stellar.org/docs/smart-contracts/errors
+ */
+const SOROBAN_ERROR_CODES: Record<string, { title: string; message: string; retryable: boolean }> = {
+  // Host function errors
+  'scvUnexpectedType': {
+    title: 'Type Mismatch',
+    message: 'Contract received an unexpected value type. Check the argument types match the contract interface.',
+    retryable: false,
+  },
+  'scvMissingValue': {
+    title: 'Missing Value',
+    message: 'Contract expected a value but received none. Ensure all required arguments are provided.',
+    retryable: false,
+  },
+  'scvInvalidInput': {
+    title: 'Invalid Input',
+    message: 'Contract received invalid input data. Verify the input format and constraints.',
+    retryable: false,
+  },
+  'scvArithmeticError': {
+    title: 'Arithmetic Error',
+    message: 'Contract encountered an arithmetic error (overflow, underflow, or division by zero).',
+    retryable: false,
+  },
+  'scvIndexBounds': {
+    title: 'Index Out of Bounds',
+    message: 'Contract attempted to access an invalid index. Check array or vector bounds.',
+    retryable: false,
+  },
+  'scvInvalidAction': {
+    title: 'Invalid Action',
+    message: 'Contract attempted an invalid operation. Review the contract logic and state.',
+    retryable: false,
+  },
+  
+  // Contract panics
+  'scvContractPanic': {
+    title: 'Contract Panic',
+    message: 'Contract execution panicked unexpectedly. This indicates a critical error in the contract code.',
+    retryable: false,
+  },
+  'scvUnwrapFailed': {
+    title: 'Unwrap Failed',
+    message: 'Contract attempted to unwrap a None value. The contract expected data that was not present.',
+    retryable: false,
+  },
+  'scvAssertionFailed': {
+    title: 'Assertion Failed',
+    message: 'Contract assertion failed. A required condition was not met during execution.',
+    retryable: false,
+  },
+  
+  // Resource limit errors
+  'scvInsufficientRefundableFee': {
+    title: 'Insufficient Refundable Fee',
+    message: 'Transaction does not have enough refundable fee for contract execution. Increase the fee.',
+    retryable: true,
+  },
+  'scvExceededLimit': {
+    title: 'Resource Limit Exceeded',
+    message: 'Contract execution exceeded resource limits (CPU, memory, or storage). Optimize the contract or increase limits.',
+    retryable: false,
+  },
+  'scvInsufficientBalance': {
+    title: 'Insufficient Contract Balance',
+    message: 'Contract does not have sufficient balance to complete the operation.',
+    retryable: false,
+  },
+  'scvStorageExhausted': {
+    title: 'Storage Exhausted',
+    message: 'Contract storage limit reached. Remove unused data or increase storage allocation.',
+    retryable: false,
+  },
+  'scvCpuLimitExceeded': {
+    title: 'CPU Limit Exceeded',
+    message: 'Contract execution exceeded CPU instruction limit. Simplify the contract logic.',
+    retryable: false,
+  },
+  'scvMemoryLimitExceeded': {
+    title: 'Memory Limit Exceeded',
+    message: 'Contract execution exceeded memory limit. Reduce memory usage in the contract.',
+    retryable: false,
+  },
+  
+  // Storage errors
+  'scvStorageError': {
+    title: 'Storage Error',
+    message: 'Contract encountered a storage access error. The requested data may not exist.',
+    retryable: false,
+  },
+  'scvStorageKeyNotFound': {
+    title: 'Storage Key Not Found',
+    message: 'Contract attempted to access a non-existent storage key.',
+    retryable: false,
+  },
+  
+  // Auth errors
+  'scvAuthError': {
+    title: 'Authorization Error',
+    message: 'Contract authorization failed. Ensure the caller has the required permissions.',
+    retryable: false,
+  },
+  'scvInvalidSignature': {
+    title: 'Invalid Signature',
+    message: 'Contract received an invalid signature. Verify the signing key and signature format.',
+    retryable: false,
+  },
+  
+  // WASM errors
+  'scvWasmTrap': {
+    title: 'WASM Trap',
+    message: 'Contract WASM execution trapped. This indicates a low-level execution error.',
+    retryable: false,
+  },
+  'scvWasmMemoryError': {
+    title: 'WASM Memory Error',
+    message: 'Contract WASM encountered a memory access error.',
+    retryable: false,
+  },
+  'scvInvalidWasm': {
+    title: 'Invalid WASM',
+    message: 'Contract WASM binary is invalid or corrupted.',
     retryable: false,
   },
 };
@@ -380,6 +517,122 @@ const ERROR_GUIDANCE_MAP: Record<StellarErrorCode, StellarErrorGuidance> = {
       { label: 'Stellar Documentation', url: 'https://developers.stellar.org/docs' },
     ],
   },
+  SOROBAN_CONTRACT_ERROR: {
+    template: {
+      title: 'Soroban Contract Error',
+      message: 'The Soroban contract execution failed. Review the contract error code for details.',
+      retryable: false,
+    },
+    steps: [
+      'Check the contract error code and message',
+      'Verify contract arguments match the expected types',
+      'Ensure the contract is deployed and accessible',
+      'Review contract logs for additional context',
+    ],
+    links: [
+      { label: 'Soroban Errors', url: 'https://developers.stellar.org/docs/smart-contracts/errors' },
+      { label: 'Contract Debugging', url: 'https://developers.stellar.org/docs/smart-contracts/debugging' },
+    ],
+  },
+  SOROBAN_HOST_FUNCTION_ERROR: {
+    template: {
+      title: 'Soroban Host Function Error',
+      message: 'A Soroban host function call failed. This indicates an issue with contract-host interaction.',
+      retryable: false,
+    },
+    steps: [
+      'Verify the host function arguments are correct',
+      'Check that the contract has permission to call the host function',
+      'Review the host function documentation for requirements',
+      'Ensure the contract environment is properly configured',
+    ],
+    links: [
+      { label: 'Host Functions', url: 'https://developers.stellar.org/docs/smart-contracts/host-functions' },
+    ],
+  },
+  SOROBAN_CONTRACT_PANIC: {
+    template: {
+      title: 'Soroban Contract Panic',
+      message: 'The contract panicked during execution. This indicates a critical error in the contract code.',
+      retryable: false,
+    },
+    steps: [
+      'Review the panic message for the root cause',
+      'Check for unwrap() calls on None values',
+      'Verify all assertions and require() conditions',
+      'Test the contract with the same inputs in a local environment',
+    ],
+    links: [
+      { label: 'Contract Debugging', url: 'https://developers.stellar.org/docs/smart-contracts/debugging' },
+      { label: 'Error Handling', url: 'https://developers.stellar.org/docs/smart-contracts/errors' },
+    ],
+  },
+  SOROBAN_RESOURCE_LIMIT_EXCEEDED: {
+    template: {
+      title: 'Soroban Resource Limit Exceeded',
+      message: 'Contract execution exceeded resource limits (CPU, memory, or storage).',
+      retryable: false,
+    },
+    steps: [
+      'Optimize contract code to reduce resource usage',
+      'Increase transaction resource limits if possible',
+      'Break complex operations into smaller transactions',
+      'Review contract storage patterns for efficiency',
+    ],
+    links: [
+      { label: 'Resource Limits', url: 'https://developers.stellar.org/docs/smart-contracts/resource-limits' },
+      { label: 'Optimization Guide', url: 'https://developers.stellar.org/docs/smart-contracts/optimization' },
+    ],
+  },
+  SOROBAN_STORAGE_ERROR: {
+    template: {
+      title: 'Soroban Storage Error',
+      message: 'Contract encountered a storage access error.',
+      retryable: false,
+    },
+    steps: [
+      'Verify the storage key exists before accessing',
+      'Check storage permissions and access patterns',
+      'Ensure storage is properly initialized',
+      'Review contract storage limits',
+    ],
+    links: [
+      { label: 'Contract Storage', url: 'https://developers.stellar.org/docs/smart-contracts/storage' },
+    ],
+  },
+  SOROBAN_AUTH_ERROR: {
+    template: {
+      title: 'Soroban Authorization Error',
+      message: 'Contract authorization failed. The caller does not have the required permissions.',
+      retryable: false,
+    },
+    steps: [
+      'Verify the caller has the required authorization',
+      'Check contract authorization requirements',
+      'Ensure signatures are valid and properly formatted',
+      'Review the contract access control logic',
+    ],
+    links: [
+      { label: 'Authorization', url: 'https://developers.stellar.org/docs/smart-contracts/authorization' },
+    ],
+  },
+  SOROBAN_WASM_ERROR: {
+    template: {
+      title: 'Soroban WASM Error',
+      message: 'Contract WASM execution encountered an error.',
+      retryable: false,
+    },
+    steps: [
+      'Verify the WASM binary is valid and not corrupted',
+      'Check that the contract was compiled correctly',
+      'Ensure the WASM version is compatible with the network',
+      'Review WASM execution logs for details',
+    ],
+    links: [
+      { label: 'Contract Deployment', url: 'https://developers.stellar.org/docs/smart-contracts/deployment' },
+      { label: 'WASM Debugging', url: 'https://developers.stellar.org/docs/smart-contracts/debugging' },
+    ],
+  },
 };
 
 /**
@@ -422,8 +675,43 @@ export function parseStellarError(
       resultCode = resultCodeMatch[1];
     }
 
-    // Check for network/timeout errors
+    // Check for Soroban contract errors
     if (
+      errorMessage.includes('scv') ||
+      errorMessage.includes('Soroban') ||
+      errorMessage.includes('contract')
+    ) {
+      // Try to extract Soroban error code
+      const sorobanCodeMatch = errorMessage.match(/\b(scv[A-Z][a-zA-Z]+)\b/);
+      if (sorobanCodeMatch && SOROBAN_ERROR_CODES[sorobanCodeMatch[1]]) {
+        const sorobanCode = sorobanCodeMatch[1];
+        const mapping = SOROBAN_ERROR_CODES[sorobanCode];
+        title = mapping.title;
+        message = mapping.message;
+        retryable = mapping.retryable;
+        resultCode = sorobanCode;
+        
+        // Categorize Soroban error
+        if (sorobanCode.includes('Panic') || sorobanCode.includes('Unwrap') || sorobanCode.includes('Assertion')) {
+          errorCode = 'SOROBAN_CONTRACT_PANIC';
+        } else if (sorobanCode.includes('Limit') || sorobanCode.includes('Exhausted')) {
+          errorCode = 'SOROBAN_RESOURCE_LIMIT_EXCEEDED';
+        } else if (sorobanCode.includes('Storage')) {
+          errorCode = 'SOROBAN_STORAGE_ERROR';
+        } else if (sorobanCode.includes('Auth') || sorobanCode.includes('Signature')) {
+          errorCode = 'SOROBAN_AUTH_ERROR';
+        } else if (sorobanCode.includes('Wasm') || sorobanCode.includes('Trap')) {
+          errorCode = 'SOROBAN_WASM_ERROR';
+        } else {
+          errorCode = 'SOROBAN_CONTRACT_ERROR';
+        }
+      } else {
+        // Generic Soroban error without specific code
+        errorCode = 'SOROBAN_CONTRACT_ERROR';
+      }
+    }
+    // Check for network/timeout errors
+    else if (
       errorMessage.includes('timeout') ||
       errorMessage.includes('ETIMEDOUT') ||
       errorMessage.includes('ECONNRESET')
@@ -627,4 +915,56 @@ export function formatError(error: unknown, verbose = false): string {
   }
 
   return formatted;
+}
+
+/**
+ * Map a Soroban contract error code to a typed application error.
+ * Provides a fallback for unknown error codes.
+ *
+ * @param sorobanErrorCode - The Soroban error code (e.g., "scvUnexpectedType")
+ * @returns Parsed error with user-friendly information
+ *
+ * @example
+ * ```typescript
+ * const error = mapSorobanError('scvUnexpectedType');
+ * console.log(error.title); // "Type Mismatch"
+ * console.log(error.message); // User-friendly message
+ * ```
+ */
+export function mapSorobanError(sorobanErrorCode: string): ParsedStellarError {
+  const mapping = SOROBAN_ERROR_CODES[sorobanErrorCode];
+  
+  if (mapping) {
+    let errorCode: StellarErrorCode = 'SOROBAN_CONTRACT_ERROR';
+    
+    // Categorize based on error code pattern
+    if (sorobanErrorCode.includes('Panic') || sorobanErrorCode.includes('Unwrap') || sorobanErrorCode.includes('Assertion')) {
+      errorCode = 'SOROBAN_CONTRACT_PANIC';
+    } else if (sorobanErrorCode.includes('Limit') || sorobanErrorCode.includes('Exhausted')) {
+      errorCode = 'SOROBAN_RESOURCE_LIMIT_EXCEEDED';
+    } else if (sorobanErrorCode.includes('Storage')) {
+      errorCode = 'SOROBAN_STORAGE_ERROR';
+    } else if (sorobanErrorCode.includes('Auth') || sorobanErrorCode.includes('Signature')) {
+      errorCode = 'SOROBAN_AUTH_ERROR';
+    } else if (sorobanErrorCode.includes('Wasm') || sorobanErrorCode.includes('Trap')) {
+      errorCode = 'SOROBAN_WASM_ERROR';
+    }
+    
+    return {
+      code: errorCode,
+      title: mapping.title,
+      message: mapping.message,
+      retryable: mapping.retryable,
+      resultCode: sorobanErrorCode,
+    };
+  }
+  
+  // Fallback for unknown Soroban error codes
+  return {
+    code: 'SOROBAN_CONTRACT_ERROR',
+    title: 'Unknown Soroban Error',
+    message: `Contract execution failed with error code: ${sorobanErrorCode}. Check the contract logs for details.`,
+    retryable: false,
+    resultCode: sorobanErrorCode,
+  };
 }
