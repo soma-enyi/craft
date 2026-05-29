@@ -11,16 +11,18 @@ export interface RetryOptions {
     backoffMultiplier?: number;
 }
 
-export interface RetryResult<T> {
-    success: true;
-    data: T;
-    attempts: number;
-} | {
-    success: false;
-    error: Error;
-    attempts: number;
-    totalDurationMs: number;
-}
+export type RetryResult<T> =
+    | {
+          success: true;
+          data: T;
+          attempts: number;
+      }
+    | {
+          success: false;
+          error: Error;
+          attempts: number;
+          totalDurationMs: number;
+      };
 
 const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_INITIAL_DELAY_MS = 100;

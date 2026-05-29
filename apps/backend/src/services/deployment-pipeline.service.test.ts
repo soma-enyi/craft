@@ -1090,3 +1090,239 @@ describe('DeploymentPipelineService — rollback on failure (#480)', () => {
         expect(updateSvc.rollbackUpdate).not.toHaveBeenCalled();
     });
 });
+
+// ── Issue #651 — GitHub Commit Status Reporting ───────────────────────────────
+//
+// Verifies that the deployment pipeline calls the GitHubCommitStatusService at
+// the correct stages and that status-reporting failures NEVER block the pipeline.
+
+describe('DeploymentPipelineService — GitHub commit status reporting (#651)', () => {
+    function makeCommitStatusMock(reportResult: { success: boolean; error?: string } = { success: true }) {
+        return {
+            reportPending: vi.fn().mockResolvedValue(reportResult),
+            reportSuccess: vi.fn().mockResolvedValue(reportResult),
+            reportFailure: vi.fn().mockResolvedValue(reportResult),
+        };
+    }
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mockInsert.mockResolvedValue({ error: null });
+        mockUpdate.mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) });
+    });
+
+    it('reports pending status after a successful code push', async () => {
+        const commitStatusMock = makeCommitStatusMock();
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
+            null,
+            commitStatusMock,
+        );
+
+        const result = await svc.deploy(request);
+
+        expect(result.success).toBe(true);
+        expect(commitStatusMock.reportPending).toHaveBeenCalledOnce();
+    });
+
+    it('reports success status after the pipeline completes', async () => {
+        const commitStatusMock = makeCommitStatusMock();
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
+            null,
+            commitStatusMock,
+        );
+
+        const result = await svc.deploy(request);
+
+        expect(result.success).toBe(true);
+        expect(commitStatusMock.reportSuccess).toHaveBeenCalledOnce();
+        expect(commitStatusMock.reportFailure).not.toHaveBeenCalled();
+    });
+
+    it('reports pending with the commit SHA from the push result', async () => {
+        const commitStatusMock = makeCommitStatusMock();
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
+            null,
+            commitStatusMock,
+        );
+
+        await svc.deploy(request);
+
+        const [, , sha] = commitStatusMock.reportPending.mock.calls[0] as string[];
+        // makeGithubPushMock returns commitSha: 'abc1234'
+        expect(sha).toBe('abc1234');
+    });
+
+    it('does NOT report a commit status when the pipeline fails before pushing code', async () => {
+        const commitStatusMock = makeCommitStatusMock();
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(false), // fails at generating — no commit SHA yet
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
+            null,
+            commitStatusMock,
+        );
+
+        const result = await svc.deploy(request);
+
+        expect(result.success).toBe(false);
+        expect(commitStatusMock.reportPending).not.toHaveBeenCalled();
+        expect(commitStatusMock.reportSuccess).not.toHaveBeenCalled();
+        expect(commitStatusMock.reportFailure).not.toHaveBeenCalled();
+    });
+
+    it('does NOT report success when the Vercel deployment step fails', async () => {
+        const commitStatusMock = makeCommitStatusMock();
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(true), // Vercel fails
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
+            null,
+            commitStatusMock,
+        );
+
+        const result = await svc.deploy(request);
+
+        expect(result.success).toBe(false);
+        expect(commitStatusMock.reportSuccess).not.toHaveBeenCalled();
+    });
+
+    it('does NOT block the pipeline when reportPending returns a failure result', async () => {
+        const commitStatusMock = makeCommitStatusMock({ success: false, error: 'GitHub API unreachable' });
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
+            null,
+            commitStatusMock,
+        );
+
+        // Entire pipeline must still succeed even though status reporting failed
+        const result = await svc.deploy(request);
+
+        expect(result.success).toBe(true);
+        expect(result.deploymentUrl).toBe('https://craft-my-dex-app.vercel.app');
+    });
+
+    it('does NOT block the pipeline when reportSuccess throws unexpectedly', async () => {
+        const commitStatusMock = {
+            reportPending: vi.fn().mockResolvedValue({ success: true }),
+            reportSuccess: vi.fn().mockRejectedValue(new Error('Unexpected commit status error')),
+            reportFailure: vi.fn().mockResolvedValue({ success: true }),
+        };
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
+            null,
+            commitStatusMock,
+        );
+
+        const result = await svc.deploy(request);
+
+        expect(result.success).toBe(true);
+    });
+
+    it('does NOT block the pipeline when reportPending throws unexpectedly', async () => {
+        const commitStatusMock = {
+            reportPending: vi.fn().mockRejectedValue(new Error('Status API down')),
+            reportSuccess: vi.fn().mockResolvedValue({ success: true }),
+            reportFailure: vi.fn().mockResolvedValue({ success: true }),
+        };
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
+            null,
+            commitStatusMock,
+        );
+
+        const result = await svc.deploy(request);
+
+        // Pipeline must complete successfully regardless of status reporting failure
+        expect(result.success).toBe(true);
+        expect(result.deploymentUrl).toBeDefined();
+    });
+
+    it('writes a warn log when commit status reporting returns a failure result', async () => {
+        const commitStatusMock = makeCommitStatusMock({ success: false, error: 'token missing' });
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
+            null,
+            commitStatusMock,
+        );
+
+        await svc.deploy(request);
+
+        const warnLogs = mockInsert.mock.calls
+            .map((call: any[]) => call[0])
+            .filter((p: any) => p?.level === 'warn' && p?.stage === 'commit_status');
+
+        expect(warnLogs.length).toBeGreaterThan(0);
+        expect(warnLogs[0].message).toContain('token missing');
+    });
+
+    it('writes a warn log when commit status reporting throws unexpectedly', async () => {
+        const commitStatusMock = {
+            reportPending: vi.fn().mockRejectedValue(new Error('unexpected throw')),
+            reportSuccess: vi.fn().mockResolvedValue({ success: true }),
+            reportFailure: vi.fn().mockResolvedValue({ success: true }),
+        };
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
+            null,
+            commitStatusMock,
+        );
+
+        await svc.deploy(request);
+
+        const warnLogs = mockInsert.mock.calls
+            .map((call: any[]) => call[0])
+            .filter((p: any) => p?.level === 'warn' && p?.stage === 'commit_status');
+
+        expect(warnLogs.length).toBeGreaterThan(0);
+        expect(warnLogs[0].message).toContain('unexpected throw');
+    });
+});
