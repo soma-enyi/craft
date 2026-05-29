@@ -184,3 +184,100 @@ export class StellarAssetValidator {
 }
 
 export const stellarAssetValidator = new StellarAssetValidator();
+
+// ---------------------------------------------------------------------------
+// DEX Liquidity Pool Compatibility (#620)
+// ---------------------------------------------------------------------------
+
+/**
+ * Stellar asset type variants for DEX compatibility checks.
+ * - `alphanum4`  : 1–4 character asset codes
+ * - `alphanum12` : 5–12 character asset codes
+ * - `native`     : XLM (always DEX-compatible)
+ */
+export type AssetVariant = 'native' | 'alphanum4' | 'alphanum12';
+
+export interface DexCompatibilityResult {
+    compatible: boolean;
+    variant?: AssetVariant;
+    error?: {
+        field: string;
+        message: string;
+        code: DexCompatibilityErrorCode;
+    };
+}
+
+export type DexCompatibilityErrorCode =
+    | AssetValidationErrorCode
+    | 'DEX_INCOMPATIBLE_CODE_LENGTH'
+    | 'DEX_INCOMPATIBLE_CHARSET';
+
+/**
+ * Determines the asset variant (native / alphanum4 / alphanum12) from a code.
+ * Returns null if the code is invalid.
+ */
+export function resolveAssetVariant(code: string): AssetVariant | null {
+    if (code === 'XLM') return 'native';
+    if (code.length >= 1 && code.length <= 4) return 'alphanum4';
+    if (code.length >= 5 && code.length <= 12) return 'alphanum12';
+    return null;
+}
+
+/**
+ * Validates an asset code for DEX liquidity pool compatibility.
+ *
+ * DEX liquidity pools on Stellar require:
+ * - Alphanumeric-4 codes: 1–4 uppercase alphanumeric characters.
+ * - Alphanumeric-12 codes: 5–12 uppercase alphanumeric characters.
+ * - Native (XLM): always compatible.
+ * - Codes with lowercase letters are rejected (Stellar asset codes are case-sensitive
+ *   on-chain and lowercase codes cannot participate in DEX pools).
+ *
+ * @param code - The asset code to validate.
+ * @returns A result indicating DEX compatibility and the resolved variant.
+ */
+export function validateAssetCodeDexCompatibility(code: unknown): DexCompatibilityResult {
+    // Reuse existing format validation first.
+    const formatResult = validateAssetCode(code);
+    if (!formatResult.valid) {
+        return {
+            compatible: false,
+            error: {
+                field: formatResult.error!.field,
+                message: formatResult.error!.message,
+                code: formatResult.error!.code,
+            },
+        };
+    }
+
+    const assetCode = code as string;
+
+    // DEX pools require uppercase-only codes.
+    if (assetCode !== assetCode.toUpperCase()) {
+        return {
+            compatible: false,
+            error: {
+                field: 'stellar.asset.code',
+                message: `Asset code "${assetCode}" contains lowercase characters. ` +
+                    'DEX liquidity pools require uppercase alphanumeric codes only.',
+                code: 'DEX_INCOMPATIBLE_CHARSET',
+            },
+        };
+    }
+
+    // Codes longer than 12 characters cannot be represented in either alphanum type.
+    if (assetCode.length > 12) {
+        return {
+            compatible: false,
+            error: {
+                field: 'stellar.asset.code',
+                message: `Asset code "${assetCode}" exceeds 12 characters and cannot participate in DEX liquidity pools.`,
+                code: 'DEX_INCOMPATIBLE_CODE_LENGTH',
+            },
+        };
+    }
+
+    const variant = resolveAssetVariant(assetCode);
+
+    return { compatible: true, variant: variant ?? undefined };
+}

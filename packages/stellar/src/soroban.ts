@@ -1,4 +1,4 @@
-import { SorobanRpc, Contract, TransactionBuilder, Networks, BASE_FEE, xdr, hash, StrKey } from 'stellar-sdk';
+import { SorobanRpc, Contract, Transaction, TransactionBuilder, Networks, BASE_FEE, xdr, hash, StrKey } from 'stellar-sdk';
 import { config } from './config';
 import { parseStellarError } from './errors';
 
@@ -408,5 +408,74 @@ export function assertValidWasmSize(wasmBinary: Buffer | Uint8Array): void {
     const result = validateWasmSize(wasmBinary);
     if (!result.valid) {
         throw new Error(result.error);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fee Bump Transaction Builder (#618)
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum fee (in stroops) allowed for a fee bump transaction.
+ * Prevents runaway costs under extreme network congestion.
+ * 1 XLM = 10_000_000 stroops; cap at 1 XLM per transaction.
+ */
+export const MAX_FEE_BUMP_STROOPS = 10_000_000;
+
+/**
+ * Multiplier applied to the network's p90 fee to derive the bump fee.
+ * Balances cost efficiency with reliable confirmation speed.
+ */
+const FEE_MULTIPLIER = 1.5;
+
+export type FeeBumpResult =
+    | { ok: true; feeBumpXdr: string; feeCharged: number }
+    | { ok: false; error: string };
+
+/**
+ * Fee Bump Transaction Builder for Soroban contract invocations.
+ *
+ * ## Fee Strategy
+ * 1. Query the Soroban RPC for recent fee statistics (p10/p50/p90).
+ * 2. Multiply the p90 fee by `FEE_MULTIPLIER` (1.5×) to stay ahead of
+ *    congestion while avoiding overpayment.
+ * 3. Cap the result at `MAX_FEE_BUMP_STROOPS` (1 XLM) to prevent runaway costs.
+ * 4. Wrap the inner transaction in a `FeeBumpTransaction` using the computed fee.
+ *
+ * Under low congestion the p90 fee is small, so the bump fee stays cheap.
+ * Under high congestion the cap prevents excessive spend.
+ *
+ * @param innerTxXdr - Signed inner transaction XDR that needs a fee bump
+ * @param feeSourcePublicKey - Account that pays the bumped fee
+ * @param client - Optional Soroban RPC client override (for testing)
+ * @returns Fee bump transaction XDR or an error description
+ */
+export async function buildFeeBumpTransaction(
+    innerTxXdr: string,
+    feeSourcePublicKey: string,
+    client: SorobanRpc.Server = sorobanClient,
+): Promise<FeeBumpResult> {
+    try {
+        // Query network fee statistics to determine an appropriate fee.
+        const feeStats = await client.getFeeStats();
+        const p90Fee = Number(feeStats.sorobanInclusionFee?.p90 ?? feeStats.inclusionFee?.p90 ?? BASE_FEE);
+
+        // Apply multiplier then enforce the cap.
+        const rawFee = Math.ceil(p90Fee * FEE_MULTIPLIER);
+        const feeCharged = Math.min(rawFee, MAX_FEE_BUMP_STROOPS);
+
+        const innerTx = TransactionBuilder.fromXDR(innerTxXdr, getNetworkPassphrase());
+
+        const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
+            feeSourcePublicKey,
+            feeCharged.toString(),
+            innerTx as Transaction,
+            getNetworkPassphrase(),
+        );
+
+        return { ok: true, feeBumpXdr: feeBumpTx.toXDR(), feeCharged };
+    } catch (error: unknown) {
+        const parsed = parseStellarError(error);
+        return { ok: false, error: parsed.message };
     }
 }
