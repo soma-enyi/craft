@@ -3,6 +3,7 @@ import { getTierFromPriceId } from '@/lib/stripe/pricing';
 import { getTaxConfiguration, buildCheckoutTaxParams, buildTaxExemptUpdate, type TaxExemptStatus } from '@/lib/stripe/tax';
 import { createClient } from '@/lib/supabase/server';
 import { paymentIdempotencyService } from './payment-idempotency.service';
+import { invoiceDeliveryService } from './invoice-delivery.service';
 import type {
     CheckoutSession,
     SubscriptionStatus,
@@ -312,9 +313,20 @@ export class PaymentService {
                 break;
             }
 
+            case 'invoice.payment_succeeded': {
+                const invoice = event.data.object as any;
+                // Deliver invoice PDF to customer on successful renewal
+                try {
+                    await invoiceDeliveryService.deliverInvoicePdf(invoice.id);
+                } catch (err) {
+                    // Log but don't fail the webhook — PDF delivery is best-effort
+                    console.error(`Invoice PDF delivery failed for ${invoice.id}:`, err);
+                }
+                break;
+            }
+
             case 'invoice.payment_failed': {
                 const invoice = event.data.object as any;
-
                 // Find user by customer ID
                 const { data: profile } = await supabase
                     .from('profiles')

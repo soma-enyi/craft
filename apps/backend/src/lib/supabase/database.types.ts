@@ -21,6 +21,7 @@ export interface Database {
                     github_token_encrypted: string | null;
                     github_token_expires_at: string | null;
                     github_token_refreshed_at: string | null;
+                    provider_connections: Json | null;
                     created_at: string;
                     updated_at: string;
                 };
@@ -35,6 +36,7 @@ export interface Database {
                     github_token_encrypted?: string | null;
                     github_token_expires_at?: string | null;
                     github_token_refreshed_at?: string | null;
+                    provider_connections?: Json | null;
                     created_at?: string;
                     updated_at?: string;
                 };
@@ -49,6 +51,7 @@ export interface Database {
                     github_token_encrypted?: string | null;
                     github_token_expires_at?: string | null;
                     github_token_refreshed_at?: string | null;
+                    provider_connections?: Json | null;
                     created_at?: string;
                     updated_at?: string;
                 };
