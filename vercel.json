@@ -16,5 +16,15 @@
             "path": "/api/cron/purge-analytics",
             "schedule": "0 2 * * *"
         }
-    ]
+    ],
+    "deploymentProtection": {
+        "environments": {
+            "preview": {
+                "type": "standard_protection",
+                "allowlist": {
+                    "bypassTokenEnabled": true
+                }
+            }
+        }
+    }
 }

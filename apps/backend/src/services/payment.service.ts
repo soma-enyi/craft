@@ -1,5 +1,6 @@
 import { stripe } from '@/lib/stripe/client';
 import { getTierFromPriceId } from '@/lib/stripe/pricing';
+import { getTaxConfiguration, buildCheckoutTaxParams, buildTaxExemptUpdate, type TaxExemptStatus } from '@/lib/stripe/tax';
 import { createClient } from '@/lib/supabase/server';
 import { paymentIdempotencyService } from './payment-idempotency.service';
 import type {
@@ -82,6 +83,10 @@ export class PaymentService {
                 .eq('id', userId);
         }
 
+        // Build automatic tax params based on environment configuration
+        const taxConfig = getTaxConfiguration();
+        const taxParams = buildCheckoutTaxParams(taxConfig);
+
         // Create checkout session with idempotency key
         const session = await stripe.checkout.sessions.create(
             {
@@ -99,6 +104,7 @@ export class PaymentService {
                 metadata: {
                     user_id: userId,
                 },
+                ...taxParams,
             },
             {
                 idempotencyKey,
@@ -332,6 +338,30 @@ export class PaymentService {
                 break;
             }
         }
+    }
+
+    /**
+     * Update a customer's tax-exempt status on their Stripe Customer record.
+     * Pass 'exempt' for non-profit/government, 'reverse' for B2B VAT reverse charge,
+     * or 'none' to restore standard taxable behaviour.
+     */
+    async updateTaxExemptStatus(userId: string, status: TaxExemptStatus): Promise<void> {
+        const supabase = createClient();
+
+        const { data: profile } = await supabase
+            .from('profiles')
+            .select('stripe_customer_id')
+            .eq('id', userId)
+            .single();
+
+        if (!profile?.stripe_customer_id) {
+            throw new Error('User does not have a Stripe customer record');
+        }
+
+        await stripe.customers.update(
+            profile.stripe_customer_id,
+            buildTaxExemptUpdate(status),
+        );
     }
 
     /**

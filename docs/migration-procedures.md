@@ -56,3 +56,36 @@ If any step in the migration workflow fails:
 - **Test with Real Data**: Always test migrations using a copy of real deployment data.
 - **Backward Compatibility**: New template versions should aim to be backward compatible with previous configurations.
 - **Minimal Downtime**: Aim for zero-downtime migrations by leveraging Vercel's deployment previews.
+
+---
+
+## Database Backup and Point-in-Time Recovery
+
+CRAFT uses Supabase PITR to ensure any failed migration can be fully reversed without data loss.
+
+### Before Running a Schema Migration
+
+1. Note the current time (UTC) — this is your restore target if the migration fails.
+2. Verify PITR is enabled: Supabase Dashboard → **Project Settings → Database → Backups**.
+3. Confirm the WAL archiving lag is < 1 minute before starting.
+
+### Recovery Point After a Failed Migration
+
+If a schema migration corrupts data or breaks the application:
+
+1. Follow the full recovery procedure in **[docs/backup-recovery-runbook.md](./backup-recovery-runbook.md)**.
+2. Restore to the timestamp noted in step 1 above (before the migration ran).
+3. Re-apply only the migrations that were known-good before the failure.
+
+### Idempotency Requirement
+
+All Supabase migration files under `supabase/migrations/` must use `IF NOT EXISTS` / `IF EXISTS` guards so that replaying migrations up to any PITR restore point is safe.  The automated tests in `supabase/tests/backup/recovery.test.ts` enforce this property.
+
+### Recovery Time and Point Objectives
+
+| Metric | Target |
+|---|---|
+| Recovery Time Objective (RTO) | < 30 minutes |
+| Recovery Point Objective (RPO) | < 1 minute (WAL granularity) |
+| PITR retention (Pro) | 7 days |
+| PITR retention (Enterprise) | 30 days |
